@@ -17,4 +17,4 @@ Setup by the following steps:
 
 
 
-        ![set_library_path_locations](../doc/set_library_path_locations.png)
+![set_library_path_locations](../doc/set_library_path_locations.png)
