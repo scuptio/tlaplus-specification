@@ -1,6 +1,3 @@
-# TLA+ specification
-
-
 # Usage
 
 This repo depends some modules(likes [UUID](https://github.com/scuptio/TLAPlusCommunityModules/blob/master/modules/UUID.tla)) which overide operators.
@@ -17,3 +14,7 @@ Setup by the following steps:
 
 
    Like this,
+
+
+
+        ![set_library_path_locations](../doc/set_library_path_locations.png)
