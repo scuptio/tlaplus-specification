@@ -12,9 +12,4 @@ Setup by the following steps:
 
     Specify TLA+ library path option locations
 
-
-   Like this,
-
-
-
-![set_library_path_locations](../doc/set_library_path_locations.png)
+<img src="../doc/set_library_path_locations.png" width="50%" height="50%">
