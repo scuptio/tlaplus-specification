@@ -51,7 +51,7 @@ vars_view == <<
 >>
 
 
-_RaftInit(_nid) ==
+_RaftVariables(_nid) ==
     [
         state |-> state[_nid],
         current_term |-> current_term[_nid],
@@ -60,13 +60,14 @@ _RaftInit(_nid) ==
         voted_for |-> voted_for[_nid]
     ]
 
-__ActionInit == "RaftAction::Init"
-__ActionRequestVote == "RaftAction::RequestVote"
-__ActionHandleRequestVote == "RaftAction::HandleRequestVote"
-__ActionBecomeLeader == "RaftAction::BecomeLeader"
-__ActionAppendLog == "RaftAction::AppendLog"
-__ActionHandleAppendLog == "RaftAction::HandleAppendLog"
-__ActionClientRequest == "RaftAction::ClientRequest"
+__ActionInit == "DTMTesting::Setup"
+__ActionCheck == "DTMTesting::Check"
+__ActionRequestVote == "DTMTesting::RequestVote"
+__ActionHandleRequestVote == "DTMTesting::HandleRequestVote"
+__ActionBecomeLeader == "DTMTesting::BecomeLeader"
+__ActionAppendLog == "DTMTesting::AppendLog"
+__ActionHandleAppendLog == "DTMTesting::HandleAppendLog"
+__ActionClientRequest == "DTMTesting::ClientRequest"
 
 Init ==
     /\ InitSaftyStateTrival(
@@ -83,15 +84,15 @@ Init ==
         )
     /\ event = {}
     /\ history = <<>>
-    /\ LET action == ActionInitFromHandle(
-            _RaftInit,
+    /\ LET actions == ActionsFromHandle(
+            _RaftVariables,
             NODE_ID, 
-            __ActionInit, 
-            __MsgInitRaft 
+            ActionInput, 
+            __ActionInit 
             ) 
         IN InitAction(
             __action__,
-            action
+            actions
         )
 
 RequestVote(nid) ==
@@ -108,8 +109,14 @@ RequestVote(nid) ==
                 node_id |-> nid
              ]}
     /\ voted_for' = [voted_for EXCEPT ![nid] = {nid}]
-	/\ LET action == Action(ActionInternal, Message(nid, nid, __ActionHandleRequestVote, {}))      
-       IN SetAction(__action__, action)
+	/\ LET actions1 == ActionsFromHandle(
+                _RaftVariables,
+                NODE_ID, 
+                ActionInput, 
+                __ActionCheck 
+                )
+	       actions2 == Action(ActionInput, Message(nid, nid, __ActionRequestVote, {})) 
+       IN SetAction(__action__, actions1 \o actions2)
     /\ UNCHANGED <<
             history,
              log,
@@ -145,11 +152,18 @@ HandleRequestVote(src, dst) ==
                         node_id |-> dst
                      ]}
               /\ LET m == [
-                               last_log_term |-> e.last_log_term,
-                               last_log_index |-> e.last_log_index
+                               term |-> _term,
+                               last_log_term |-> _last_log_term,
+                               last_log_index |-> _last_log_index
                           ]
-                 IN LET action == Action(ActionInternal, Message(src, dst, __ActionRequestVote, m))       
-                    IN SetAction(__action__, action)
+                 IN LET actions1 == ActionsFromHandle(
+                            _RaftVariables,
+                            NODE_ID, 
+                            ActionInput, 
+                            __ActionCheck 
+                            )
+                        actions2 == Action(ActionInput, Message(src, dst, __ActionHandleRequestVote, m))       
+                    IN SetAction(__action__, actions1 \o actions2)
                         /\ UNCHANGED <<history, state, current_term, log, snapshot>>
 
 
@@ -166,8 +180,14 @@ BecomeLeader(nid) ==
         /\ state[nid] = Candidate
         /\ state' = [state EXCEPT ![nid] = Leader]
         /\ UNCHANGED <<current_term, log, snapshot, voted_for, event>>
-    /\ LET action  == Action(ActionInternal, Message(nid, nid, __ActionBecomeLeader, {}))
-        IN SetAction(__action__, action)
+    /\ LET  actions1 == ActionsFromHandle(
+                            _RaftVariables,
+                            NODE_ID, 
+                            ActionInput, 
+                            __ActionCheck 
+                            )
+            actions2  == Action(ActionInput, Message(nid, nid, __ActionBecomeLeader, {}))
+        IN SetAction(__action__, actions1 \o actions2)
     /\ LET o == 
         [
             election |-> 
@@ -190,8 +210,14 @@ UpdateTerm(src, dst) ==
         /\ current_term' = [current_term EXCEPT ![dst] = e.term]
         /\ voted_for' = [voted_for EXCEPT ![dst] = {}]
         /\ UNCHANGED <<history, log, snapshot, event>>
-        /\ LET action == Action(ActionInternal, Message(src, dst, __ActionBecomeLeader, {}))
-            IN SetAction(__action__, action)
+        /\ LET actions1 == ActionsFromHandle(
+                            _RaftVariables,
+                            NODE_ID, 
+                            ActionInput, 
+                            __ActionCheck 
+                            )
+                actions2 == Action(ActionInput, Message(src, dst, __ActionBecomeLeader, {}))
+            IN SetAction(__action__, actions1 \o actions2)
 
 
 AppendLog(nid) ==
@@ -214,15 +240,22 @@ AppendLog(nid) ==
                                                     
                             ]}
         /\ UNCHANGED <<log, snapshot, state, voted_for, current_term, history>>
-        /\ LET action == Action(ActionInternal, Message(nid, nid, __ActionAppendLog, {}))
-            IN SetAction(__action__, action)
+        /\ LET actions1 == ActionsFromHandle(
+                            _RaftVariables,
+                            NODE_ID, 
+                            ActionInput, 
+                            __ActionCheck 
+                            )
+                actions2 == Action(ActionInput, Message(nid, nid, __ActionAppendLog, {}))
+            IN SetAction(__action__, actions1 \o actions2)
 
 
 HandleAppendLog(src, dst) ==
     /\ \E e \in event:                               
         /\ e.event_type = "AppendLog"
         /\ e.node_id = src
-        /\ LET  prev_log_index == e.prev_log_index
+        /\ LET  
+                prev_log_index == e.prev_log_index
                 prev_log_term == e.prev_log_term
                 log_ok == LogPrevEntryOK(
                     log, 
@@ -232,6 +265,14 @@ HandleAppendLog(src, dst) ==
                     prev_log_term)
                 term == e.term
                 log_entries == e.log_entries
+                msg_payload == [
+                            term          |-> term,
+                            prev_log_index  |-> prev_log_index,
+                            prev_log_term   |-> prev_log_term,
+                            log_entries       |-> log_entries,
+                            commit_index   |-> 0
+
+                    ]
            IN(\/ ( \* reject request
                     /\ RejectAppendLog(current_term, state, dst, term, log_ok)
                     /\ UNCHANGED <<current_term, state, voted_for, log, snapshot, event, history>>
@@ -299,9 +340,15 @@ HandleAppendLog(src, dst) ==
                         )
                      /\ UNCHANGED <<current_term, state, voted_for, snapshot>>
                    )
+          /\ LET actions1 == ActionsFromHandle(
+                            _RaftVariables,
+                            NODE_ID, 
+                            ActionInput, 
+                            __ActionCheck 
+                            )
+                actions2 == Action(ActionInput, Message(src, dst, __ActionHandleAppendLog, msg_payload))
+             IN SetAction(__action__, actions1 \o actions2)
                )
-      /\ LET action == Action(ActionInternal, Message(src, dst, __ActionHandleAppendLog, {}))
-         IN SetAction(__action__, action)
 
 ClientRequest(nid, v) ==
     /\ state[nid] = Leader
@@ -311,8 +358,14 @@ ClientRequest(nid, v) ==
                 value |-> v]
         IN /\ log' = [log EXCEPT ![nid] = Append(log[nid], entry)]
     /\ UNCHANGED <<history, current_term, state, voted_for, snapshot, event>>
-    /\ LET action == Action(ActionInternal, Message(nid, nid, __ActionClientRequest, [value |-> v]))
-        IN SetAction(__action__, action)
+    /\ LET actions1 == ActionsFromHandle(
+                            _RaftVariables,
+                            NODE_ID, 
+                            ActionInput, 
+                            __ActionCheck 
+                            )
+            actions2 == Action(ActionInput, Message(nid, nid, __ActionClientRequest, v))
+        IN SetAction(__action__, actions1 \o actions2)
      
        
 Next == 

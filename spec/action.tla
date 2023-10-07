@@ -3,9 +3,9 @@
 EXTENDS message, UUID, Sequences, FiniteSets, Naturals
 
 
-ActionInternal  ==  "Internal"
-ActionInput     ==  "Input"
-ActionOutput    ==  "Output"
+ActionInternal  ==  "T"
+ActionInput     ==  "I"
+ActionOutput    ==  "O"
 
 
 IsInjective(f) == \A a,b \in DOMAIN f : f[a] = f[b] => a = b
@@ -22,8 +22,8 @@ Action(
     _payload
 ) == 
     <<[
-            type |-> _action_type, 
-            payload |-> _payload
+            t |-> _action_type, 
+            p |-> _payload
     ]>>
 
 
@@ -100,7 +100,7 @@ __ActionSeqOfEachNodeHandle(
                 _action_name
                 ) \o action
 
-ActionInitFromHandle(
+ActionsFromHandle(
     _handle_node_id(_),
     _node_ids,
     _action_type,
@@ -117,9 +117,9 @@ SetAction(
     _action_sequence
 ) ==
     _action_variable' = [
-        uuid_prev |-> _action_variable.uuid,
-        uuid |-> UUID,
-        actions |-> _action_sequence 
+        p |-> _action_variable.i,
+        i |-> UUID,
+        a |-> _action_sequence 
     ]
 
 InitAction(
@@ -127,9 +127,9 @@ InitAction(
     _action_sequence
 ) ==
     _action_variable = [
-        uuid_prev |-> "",
-        uuid |-> UUID,
-        actions |-> _action_sequence 
+        p |-> "",
+        i |-> UUID,
+        a |-> _action_sequence 
     ]
 
     
