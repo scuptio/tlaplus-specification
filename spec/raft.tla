@@ -11,7 +11,7 @@ EXTENDS
     FiniteSets, 
     Sequences, 
     TLC
-
+    
 CONSTANT MAX_TERM
 CONSTANT VALUE
 CONSTANT RECONFIG_VALUE
@@ -108,7 +108,7 @@ RequestVote(nid) ==
                 last_log_index |-> Len(log[nid]),
                 node_id |-> nid
              ]}
-    /\ voted_for' = [voted_for EXCEPT ![nid] = {nid}]
+    /\ voted_for' = [voted_for EXCEPT ![nid] = nid]
 	/\ LET actions1 == ActionsFromHandle(
                 _RaftVariables,
                 NODE_ID, 
@@ -143,7 +143,7 @@ HandleRequestVote(src, dst) ==
                         _last_log_index)
            IN /\ current_term[dst] = _term
               /\ _granted 
-              /\ voted_for' = [voted_for EXCEPT ![dst] = {_voted_for_node}]
+              /\ voted_for' = [voted_for EXCEPT ![dst] = _voted_for_node]
               /\ event' = event \union 
                     {[
                         event_type  |-> "HandleRequestVote",
@@ -208,7 +208,7 @@ UpdateTerm(src, dst) ==
         /\ e.event_type \in { "RequestVote", "AppendLog" }
         /\ state' = [state EXCEPT ![dst] = Follower]
         /\ current_term' = [current_term EXCEPT ![dst] = e.term]
-        /\ voted_for' = [voted_for EXCEPT ![dst] = {}]
+        /\ voted_for' = [voted_for EXCEPT ![dst] = INVALID_NODE_ID]
         /\ UNCHANGED <<history, log, snapshot, event>>
         /\ LET actions1 == ActionsFromHandle(
                             _RaftVariables,
@@ -280,7 +280,7 @@ HandleAppendLog(src, dst) ==
                 \/ (\* return to follower replicate_state
                     /\ CandidateBecomeFollower(current_term, state, dst, term)
                     /\ state' = [state EXCEPT ![dst] = Follower]
-                    /\ voted_for' = [voted_for EXCEPT ![dst] = {}]
+                    /\ voted_for' = [voted_for EXCEPT ![dst] = INVALID_NODE_ID]
                     /\ UNCHANGED <<current_term, log, snapshot, event, history>>
                    )
                 \/ (\* accept request

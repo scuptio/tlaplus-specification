@@ -3,6 +3,8 @@ EXTENDS action, Naturals, FiniteSets, Sequences, TLC
 
 ----
 
+CONSTANT INVALID_NODE_ID
+
 \* raft role states.
 Follower == "Follower"
 Candidate == "Candidate"
@@ -172,7 +174,7 @@ InitState(_node_ids) ==
     [i \in _node_ids |-> Follower]
     
 InitVotedFor(_node_ids) ==
-    [i \in _node_ids |-> {}]
+    [i \in _node_ids |-> INVALID_NODE_ID]
     
 InitLog(_node_ids) ==
     [i \in _node_ids |-> << >>]
@@ -182,7 +184,7 @@ InitCommitIndex(_node_ids) ==
 
 
 InitVoteGranted(_node_ids) ==
-    [i \in _node_ids |-> {}]
+    [i \in _node_ids |-> INVALID_NODE_ID]
     
 \* The values NextIndex[i][i] and MatchIndex[i][i] are never read, since the
 \* leader does not send itself messages. It's still easier to include these
@@ -557,8 +559,8 @@ VoteCanGrant(
         _last_log_index)
     /\ (\/ _term > _current_term[_id]
         \/  (/\ _term = _current_term[_id]
-            /\ (\/ _voted_for[_id] = {}
-                \/ _voted_for[_id] = {_to_vote_for}
+            /\ (\/ _voted_for[_id] = INVALID_NODE_ID
+                \/ _voted_for[_id] = _to_vote_for
                 )
             )
         )
@@ -709,9 +711,9 @@ VotedForOK(
     _voted_for,
     _id
 ) ==
-    \/ Cardinality(_voted_for[_id]) = 0
-    \/( /\ Cardinality(_voted_for[_id]) = 1
-        /\ LET _to_vote_for_id == CHOOSE i \in  _voted_for[_id] : TRUE
+    \/ _voted_for[_id] = INVALID_NODE_ID
+    \/( /\ _voted_for[_id] /= INVALID_NODE_ID
+        /\ LET _to_vote_for_id ==  _voted_for[_id]
            IN  \/ _id = _to_vote_for_id
                 \/( /\ _id # _to_vote_for_id
                     /\ VoteGrantOK(
@@ -825,7 +827,7 @@ InitSaftyStateTrival(
     /\ _state \in  [_node_ids -> {Follower} ]
     /\ _current_term \in [_node_ids -> {1} ]
     /\ _log \in [_node_ids -> {<<>>} ]
-    /\ _voted_for \in [_node_ids -> {{}} ]
+    /\ _voted_for \in [_node_ids -> {INVALID_NODE_ID} ]
     /\ _snapshot \in [_node_ids -> [term: {0}, index: {0}] ]
     /\ BaseStateOK(
         _state,
@@ -854,7 +856,7 @@ InitSaftyState(
     /\ _state \in  [_node_ids -> StateSet]
     /\ _current_term \in [_node_ids -> 1.._max_term ]
     /\ _log \in [_node_ids -> _ValidLogSeqSet(_max_entries, _max_term, _value_set) ]
-    /\ _voted_for \in [_node_ids -> _OneIdSet(_node_ids)]
+    /\ _voted_for \in [_node_ids -> _node_ids \cup {INVALID_NODE_ID}]
     /\ _snapshot \in [_node_ids -> {
                         x \in [term : 0.._max_term, index : 0.._max_snapshot_index] : 
                             \/ (x.term = 0 /\ x.index = 0)
