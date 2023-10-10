@@ -1,4 +1,4 @@
---------------------------------- MODULE raft ---------------------------------
+--------------------------------- MODULE raft_abstract ---------------------------------
 \* This is the formal specification for the Raft consensus algorithm.
 
 
