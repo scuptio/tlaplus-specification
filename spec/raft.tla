@@ -68,6 +68,7 @@ __ActionBecomeLeader == "DTMTesting::BecomeLeader"
 __ActionAppendLog == "DTMTesting::AppendLog"
 __ActionHandleAppendLog == "DTMTesting::HandleAppendLog"
 __ActionClientRequest == "DTMTesting::ClientRequest"
+__ActionUpdateTerm == "DTMTesting::UpdateTerm"
 
 Init ==
     /\ InitSaftyStateTrival(
@@ -216,7 +217,7 @@ UpdateTerm(src, dst) ==
                             ActionInput, 
                             __ActionCheck 
                             )
-                actions2 == Action(ActionInput, Message(src, dst, __ActionBecomeLeader, {}))
+                actions2 == Action(ActionInput, Message(src, dst, __ActionUpdateTerm, e.term))
             IN SetAction(__action__, actions1 \o actions2)
 
 
@@ -354,6 +355,7 @@ ClientRequest(nid, v) ==
     /\ state[nid] = Leader
     /\ ~LogHasValue(log, nid, v)
     /\  LET entry == [
+                index |-> Len(log[nid]) + 1,
                 term  |-> current_term[nid],
                 value |-> v]
         IN /\ log' = [log EXCEPT ![nid] = Append(log[nid], entry)]
