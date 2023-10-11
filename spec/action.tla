@@ -1,6 +1,6 @@
 --------------------------------- MODULE action ---------------------------------
 
-EXTENDS message, UUID, Sequences, FiniteSets, Naturals
+EXTENDS message, UUID, StateDB, Sequences, FiniteSets, Naturals
 
 
 ActionInternal  ==  "T"

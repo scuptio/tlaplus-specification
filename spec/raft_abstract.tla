@@ -18,6 +18,7 @@ CONSTANT RECONFIG_VALUE
 CONSTANT NODE_ID
 CONSTANT CHECK_SAFETY
 CONSTANT ENABLE_ACTION
+CONSTANT ENABLE_STATE_DB
 ----
 
 
@@ -70,7 +71,25 @@ __ActionHandleAppendLog == "DTMTesting::HandleAppendLog"
 __ActionClientRequest == "DTMTesting::ClientRequest"
 __ActionUpdateTerm == "DTMTesting::UpdateTerm"
 
+
+SaveVars ==
+    [
+        state |-> state,
+        current_term |-> current_term,
+        log |-> log,
+        snapshot |-> snapshot,
+        voted_for |-> voted_for
+    ]
+
+
+InitStateDB == 
+    ENABLE_STATE_DB => DBOpen("/tmp/state.db")
+    
+SaveState ==
+    ENABLE_STATE_DB => Put(SaveVars)
+        
 Init ==
+    /\ InitStateDB
     /\ InitSaftyStateTrival(
         state,
         current_term,
@@ -95,7 +114,8 @@ Init ==
             __action__,
             actions
         )
-
+    /\ Put(SaveVars)
+    
 RequestVote(nid) ==
     /\ TermLE(nid, current_term, MAX_TERM)
     /\ state[nid] = Follower
@@ -373,26 +393,32 @@ ClientRequest(nid, v) ==
 Next == 
     \/ \E nid \in NODE_ID:
         \E value \in VALUE:   
-            ClientRequest(nid, value)
+            /\ ClientRequest(nid, value)
+            /\ SaveState
     \/ \E nid \in NODE_ID:  
-            RequestVote(nid)
+            /\ RequestVote(nid)
+            /\ SaveState
     \/ \E nid1, nid2 \in NODE_ID:  
-            UpdateTerm(nid1, nid2)
+            /\ UpdateTerm(nid1, nid2)
+            /\ SaveState
     \/ \E nid \in NODE_ID:  
-            BecomeLeader(nid)
+            /\ BecomeLeader(nid)
+            /\ SaveState
     \/ \E nid \in NODE_ID:  
-            AppendLog(nid)
+            /\ AppendLog(nid)
+            /\ SaveState
     \/ \E nid1, nid2 \in NODE_ID:  
-            HandleRequestVote(nid1, nid2)
+            /\ HandleRequestVote(nid1, nid2)
+            /\ SaveState
     \/ \E nid1, nid2 \in NODE_ID:  
-            HandleAppendLog(nid1, nid2)   
-                     
+            /\ HandleAppendLog(nid1, nid2)   
+            /\ SaveState
+            
 \* The specification must start with the initial state and transition according
 \* to Next.
 Spec == 
     /\ Init 
     /\ [][Next]_vars
-
 ----
 
 
