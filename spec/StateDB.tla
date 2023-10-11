@@ -12,21 +12,31 @@ DBOpen(path) ==
 DBClose ==
     TRUE
 
-Put(val) ==
+CreateState(state) ==
   (*************************************************************************)
-  (* Put would store a tuple of values to the given file as (plain) JSON.  *)
-  (* Records will be serialized as a JSON objects, and tuples as arrays.   *)
+  (* NewState would store state to a give database if it not exist         *)
   (*************************************************************************)
   TRUE
 
-QueryAll ==
+QueryAllStates ==
   (*************************************************************************)
-  (* QueryAll would load a set of value from the given file. JSON objects  *)
-  (* will be deserialized to records, and arrays will be deserialized to   *)
-  (* tuples.   															   *)
+  (* QueryAllStates would load a set of state from the given database.     *)
   (*************************************************************************)
   CHOOSE val : TRUE
 
+
+StoreValue(name, value) ==
+  (*************************************************************************)
+  (* StoreValue would store a named value to a give database.              *)
+  (*************************************************************************)
+  TRUE
+    
+
+LoadValue(name) ==
+  (*************************************************************************)
+  (* LoadValue would load a named value from a give database.              *)
+  (*************************************************************************)
+  CHOOSE val: TRUE
 
 
 ============================================================================

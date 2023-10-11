@@ -83,13 +83,15 @@ SaveVars ==
 
 
 InitStateDB == 
-    ENABLE_STATE_DB => DBOpen("/tmp/state.db")
+    ENABLE_STATE_DB => 
+        /\ DBOpen("/tmp/state.db") 
+        /\ CreateState(SaveVars)
     
 SaveState ==
-    ENABLE_STATE_DB => Put(SaveVars)
+    ENABLE_STATE_DB => 
+        CreateState(SaveVars)
         
 Init ==
-    /\ InitStateDB
     /\ InitSaftyStateTrival(
         state,
         current_term,
@@ -114,7 +116,7 @@ Init ==
             __action__,
             actions
         )
-    /\ Put(SaveVars)
+    /\ InitStateDB
     
 RequestVote(nid) ==
     /\ TermLE(nid, current_term, MAX_TERM)
