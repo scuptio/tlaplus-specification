@@ -18,7 +18,7 @@ CONSTANT RECONFIG_VALUE
 CONSTANT NODE_ID
 CONSTANT CHECK_SAFETY
 CONSTANT ENABLE_ACTION
-CONSTANT ENABLE_STATE_DB
+CONSTANT STATE_DB_PATH
 ----
 
 
@@ -81,14 +81,13 @@ SaveVars ==
         voted_for |-> voted_for
     ]
 
-
 InitStateDB == 
-    ENABLE_STATE_DB => 
-        /\ DBOpen("/tmp/state.db") 
+    STATE_DB_PATH /= "" => 
+        /\ DBOpen(STATE_DB_PATH) 
         /\ CreateState(SaveVars)
     
 SaveState ==
-    ENABLE_STATE_DB => 
+    STATE_DB_PATH /= "" => 
         CreateState(SaveVars)
         
 Init ==

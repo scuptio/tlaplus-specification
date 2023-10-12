@@ -9,7 +9,7 @@ EXTENDS action, Sequences
 
 \* Channel Utility
 
-Msg(source, dest, channel) ==
+FilterMessage(source, dest, channel) ==
     {m \in channel : m.source = source /\ m.dest = dest}
 
 
@@ -47,5 +47,5 @@ BuildMessageSet(msg, dest_node_ids) ==
 
 =============================================================================
 \* Modification History
-\* Last modified Sun Jun 18 16:26:25 CST 2023 by ybbh
+\* Last modified Thu Oct 12 12:01:40 CST 2023 by ybbh
 \* Created Thu Jan 26 12:28:51 CST 2023 by ybbh

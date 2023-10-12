@@ -27,6 +27,23 @@ Action(
     ]>>
 
 
+Actions(
+    _action_type,
+    _payload_set
+) ==
+    LET _action_set == [
+        t : {_action_type},
+        p : _payload_set
+    ]
+    IN SetToSeq(_action_set)
+
+CheckAction(_action, _node_id) ==
+    \A i \in DOMAIN _action:
+        /\ _action[i].t \in {ActionInternal, ActionInput, ActionOutput}
+        /\ _action[i].source \in _node_id
+        /\ _action[i].dest \in _node_id
+        
+        
 AppendActionSeq(_var, _action_seq) ==
     _var \o _action_seq
 
