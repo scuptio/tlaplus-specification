@@ -272,6 +272,42 @@ AppendLog(nid) ==
             IN SetAction(__action__, actions1 \o actions2)
 
 
+_HandleAppendLog(
+    _handle_reject,
+    _handle_candidate_become_follower,
+    _handle_append_log,
+    _v_log,
+    _v_snapshot,
+    _v_current_term,
+    _v_state,
+    _node_id,
+    _leader_node_id,
+    _prev_log_index,
+    _prev_log_term,
+    _term,
+    _log_entries, \* sequence of log entries
+    _commit_index
+    ) ==
+    /\ TRUE
+    /\ LET log_ok == LogPrevEntryOK(
+                    _v_log,
+                    _v_snapshot,
+                    _node_id,
+                    _prev_log_index,
+                    _prev_log_term)
+      IN \* reject request
+         \/ ( /\ RejectAppendLog(_v_current_term, _v_state, _node_id, _term, log_ok)
+              /\ _handle_reject
+            )
+         \* to follower state
+         \/ ( /\ CandidateBecomeFollower(_v_current_term, _v_state, _node_id, _term)
+              /\ _handle_candidate_become_follower
+            )
+         \* OK, append the log
+         \/ ( /\ FollowerAcceptAppendLog(_v_current_term, _v_state, _node_id, _term, log_ok)
+              /\ _handle_append_log
+            )
+            
 HandleAppendLog(src, dst) ==
     /\ \E e \in event:                               
         /\ e.event_type = "AppendLog"
