@@ -86,11 +86,11 @@ InitVote ==
         /\ DBOpen(STATE_DB_PATH)
         /\ LET s == QueryAllStates
            IN /\ \E e \in s:
-                /\ e.state = v_state
-                /\ e.current_term = v_current_term
-                /\ e.log = v_log
-                /\ e.snapshot = v_snapshot
-                /\ e.voted_for = v_voted_for
+                /\ v_state = e.state
+                /\ v_current_term = e.current_term
+                /\ v_log = e.log
+                /\ v_snapshot = e.snapshot
+                /\ v_voted_for = e.voted_for
        )
     /\ v_vote_granted = InitVoteGranted(NODE_ID)
     /\ v_history = InitHistory
