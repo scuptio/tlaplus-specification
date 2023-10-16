@@ -43,6 +43,16 @@ vars == <<
     __action__
 >>
 
+vars_view == <<
+    v_state,
+    v_current_term,
+    v_log, 
+    v_snapshot,
+    v_voted_for,
+    v_vote_granted,
+    v_channel
+>>
+
 __ActionInit == "DTMTesting::Setup"
 __ActionBecomeLeader == "DTMTesting::BecomeLeader"
 __ActionTimeoutRequestVote == "DTMTesting::TimeoutRequestVote"
@@ -59,15 +69,29 @@ _RaftVariables(_nid) ==
 
 
 InitVote ==
-    /\ DBOpen(STATE_DB_PATH)
-    /\ LET s == QueryAllStates
-       IN /\ PrintT(s)
-          /\ \E e \in s:
-            /\ e.state = v_state
-            /\ e.current_term = v_current_term
-            /\ e.log = v_log
-            /\ e.snapshot = v_snapshot
-            /\ e.voted_for = v_voted_for
+    /\ ( IF STATE_DB_PATH = "" THEN
+        InitSaftyStateTrival(
+                v_state,
+                v_current_term,
+                v_log,
+                v_snapshot,
+                v_voted_for,
+                NODE_ID,
+                VALUE,
+                MAX_TERM,
+                1, 
+                1
+            )
+      ELSE
+        /\ DBOpen(STATE_DB_PATH)
+        /\ LET s == QueryAllStates
+           IN /\ \E e \in s:
+                /\ e.state = v_state
+                /\ e.current_term = v_current_term
+                /\ e.log = v_log
+                /\ e.snapshot = v_snapshot
+                /\ e.voted_for = v_voted_for
+       )
     /\ v_vote_granted = InitVoteGranted(NODE_ID)
     /\ v_history = InitHistory
     /\ v_channel = {}
@@ -90,10 +114,10 @@ InitVote ==
 \* NODE_ID _node_id times out and starts a new election.
 VoteTimeoutRequestVote(_node_id, _max_term) == 
     /\ TermLE(_node_id, v_current_term, _max_term)
-    /\ v_state[_node_id] \in {Candidate}
+    /\ v_state[_node_id] = Follower
     /\ v_state' = [v_state EXCEPT ![_node_id] = Candidate]
     /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = v_current_term[_node_id] + 1]
-    /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = {_node_id}]
+    /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = _node_id]
     /\ v_vote_granted'   = [v_vote_granted EXCEPT ![_node_id] = {_node_id}]
     /\  LET 
     
@@ -109,6 +133,7 @@ VoteTimeoutRequestVote(_node_id, _max_term) ==
            /\ SetAction(__action__, actions_input \o actions_output)
     /\ UNCHANGED <<
             v_log, 
+            v_snapshot,
             v_history
             >>
 
@@ -130,27 +155,36 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                 vote_granted |-> grant
             ]
         reply ==  Message(_node_id, _from_node_id, VoteResponse, payload)
-    IN 
-        IF _msg_payload.term <= v_current_term[_node_id] THEN
-            /\ (\/ (/\ grant
-                    /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = {_from_node_id}] 
-                   )
-                \/ (/\ ~grant
-                    /\ UNCHANGED v_voted_for 
-                   )
-                )
-            /\ v_channel' = WithMessage(reply, v_channel) 
-            /\ SetAction(__action__, AppendActionSeq(_action_seq, Action(ActionOutput, reply)))
-        ELSE
-            /\ SetAction(__action__, _action_seq)
-            /\ UNCHANGED <<v_voted_for, v_channel>>
-    /\ UNCHANGED << 
-            v_current_term,
-            v_vote_granted,
-            v_log, 
-            v_state,
-            v_history
-        >>
+    IN /\  (IF _msg_payload.term <= v_current_term[_node_id] THEN
+
+                    /\ (\/ (/\ grant
+                            /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = _from_node_id] 
+                           )
+                        \/ (/\ ~grant
+                            /\ UNCHANGED v_voted_for 
+                           )
+                       )
+                    /\ SetAction(__action__, AppendActionSeq(_action_seq, Action(ActionOutput, reply)))
+                    /\ UNCHANGED <<v_current_term>>        
+             ELSE /\ (\/ ( /\ grant 
+                           \* update voted for and current_term
+                           /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = _from_node_id] 
+                           /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = term]
+                          )
+                      \/ ( /\ ~grant
+                           /\ UNCHANGED <<v_voted_for, v_current_term>>
+                         )     
+                     )
+                  /\ SetAction(__action__, _action_seq)
+             ) 
+        /\ v_channel' = WithMessage(reply, v_channel)   
+        /\ UNCHANGED << 
+                v_vote_granted,
+                v_log, 
+                v_snapshot,
+                v_state,
+                v_history
+            >>
 
 HandleVoteRequest(msg) ==
     /\ msg.name = VoteRequest
@@ -176,7 +210,7 @@ BecomeLeader(i) ==
         IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
     /\ LET action == Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
        IN SetAction(__action__, action)
-    /\ UNCHANGED <<v_channel, v_current_term, v_voted_for, v_log>>
+    /\ UNCHANGED <<v_channel, v_current_term, v_voted_for, v_log, v_snapshot>>
 
 \* NODE_ID i receives a RequestVote response from server j with
 \* m.term = v_current_term[i].
@@ -185,18 +219,18 @@ __HandleVoteResponse(i, _from_node, _m) ==
     \* they won't be looked at, so it doesn't matter.
     /\ IF _m.term = v_current_term[i] THEN
             /\ v_state[i] = Candidate 
-            /\ (\/( /\ _m.granted
+            /\ (\/( /\ _m.vote_granted
                     /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] =
                                             v_vote_granted[i] \cup {_from_node}]                
                     )
-                \/ ( /\ ~_m.granted
-                        /\ UNCHANGED <<v_vote_granted, v_state>>
+                \/ ( /\ ~_m.vote_granted
+                     /\ UNCHANGED <<v_vote_granted, v_state>>
                     )
                 )   
              
         ELSE
             /\ UNCHANGED <<v_vote_granted, v_state>>
-    /\ UNCHANGED <<v_current_term, v_voted_for, v_log, v_state>>
+    /\ UNCHANGED <<v_current_term, v_voted_for, v_log, v_snapshot, v_state>>
              
 HandleVoteResponse(msg) ==
     /\ msg.name = VoteResponse
@@ -214,7 +248,9 @@ VoteRestartNode(i) ==
     /\ v_state' = [v_state EXCEPT ![i] = Follower]
     /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] = {}]
     /\ UNCHANGED <<
+        v_channel,
         v_current_term, 
+        v_snapshot,
         v_log,
         v_voted_for,
         v_history

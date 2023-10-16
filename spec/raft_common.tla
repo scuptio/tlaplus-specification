@@ -184,7 +184,7 @@ InitCommitIndex(_node_ids) ==
 
 
 InitVoteGranted(_node_ids) ==
-    [i \in _node_ids |-> INVALID_NODE_ID]
+    [i \in _node_ids |-> {}]
     
 \* The values NextIndex[i][i] and MatchIndex[i][i] are never read, since the
 \* leader does not send itself messages. It's still easier to include these
@@ -546,21 +546,21 @@ VoteCanGrant(
     _current_term, 
     _vote_log, 
     _voted_for, 
-    _to_vote_for, 
-    _id, 
+    _to_vote_for_node_id, 
+    _node_id, 
     _term, 
     _last_log_term, 
     _last_log_index
 ) ==
     /\ IsLastLogTermIndexOK(
         _vote_log, 
-        _id, 
+        _node_id, 
         _last_log_term, 
         _last_log_index)
-    /\ (\/ _term > _current_term[_id]
-        \/  (/\ _term = _current_term[_id]
-            /\ (\/ _voted_for[_id] = INVALID_NODE_ID
-                \/ _voted_for[_id] = _to_vote_for
+    /\ (\/ _term > _current_term[_node_id]
+        \/  (/\ _term = _current_term[_node_id]
+            /\ (\/ _voted_for[_node_id] = INVALID_NODE_ID
+                \/ _voted_for[_node_id] = _to_vote_for_node_id
                 )
             )
         )
