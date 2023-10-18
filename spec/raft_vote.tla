@@ -200,78 +200,67 @@ HandleVoteRequest(msg) ==
     /\ LET _action_seq == Action(ActionInput, msg)
        IN  __HandleVoteRequest(msg.dest, msg.source, msg.payload, _action_seq)
     /\ UNCHANGED <<v_history>>
-    
-BecomeLeader(i) ==
-    /\ v_vote_granted[i] \in QuorumOf(NODE_ID)
-    /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] = {}]
-    /\ v_state' = [v_state EXCEPT ![i] = Leader]
-    
-    /\ LET o == 
-        [
-            election |-> 
-            [
-               leader |-> i,
-               term |-> v_current_term[i],
-               log |-> v_log[i],
-               snapshot |-> [term |-> 0, index |-> 0]
-            ]
-        ] 
-        IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
-    /\ LET actions1 == Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
-       IN 
-    /\ UNCHANGED <<v_channel, v_current_term, v_voted_for, v_log, v_snapshot>>
+
+
+
 
 \* NODE_ID i receives a RequestVote response from server j with
 \* m.term = v_current_term[i].
-__HandleVoteResponse(i, _from_node, _m) ==
+__HandleVoteResponse(i, _from_node, _m, _actions) ==
     \* This tallies votes even when the current v_state is not Candidate, but
     \* they won't be looked at, so it doesn't matter.
     /\ IF _m.term = v_current_term[i] THEN
             /\ v_state[i] \in {Candidate, Leader} 
             /\ (\/( /\ _m.vote_granted
                     /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] =
-                                            v_vote_granted[i] \cup {_from_node}]                
+                                            v_vote_granted[i] \cup {_from_node}]    
+                    /\ IF  /\ v_state[i] = Candidate
+                           /\ v_vote_granted[i] \cup {_from_node} \in  QuorumOf(NODE_ID)
+                       THEN
+                        (     /\ LET o == 
+                                    [
+                                        election |-> 
+                                        [
+                                           leader |-> i,
+                                           term |-> v_current_term[i],
+                                           log |-> v_log[i],
+                                           snapshot |-> [term |-> 0, index |-> 0]
+                                        ]
+                                    ] 
+                                  IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
+                              /\ v_state' = [v_state EXCEPT ![i] = Leader]
+                              /\ LET actions == _actions \o Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
+                                 IN SetAction(__action__,  actions)
+                          )
+                       ELSE
+                            /\ SetAction(__action__,  _actions)
+                            /\ UNCHANGED <<v_history, v_state>>                   
                     )
                 \/ ( /\ ~_m.vote_granted
-                     /\ UNCHANGED <<v_vote_granted, v_state>>
+                     /\ SetAction(__action__,  _actions)
+                     /\ UNCHANGED <<v_vote_granted, v_state, v_history>>
                     )
                 )   
              
         ELSE
-            /\ UNCHANGED <<v_vote_granted, v_state>>
-    /\ UNCHANGED <<v_current_term, v_voted_for, v_log, v_snapshot, v_state>>
+            /\ SetAction(__action__,  _actions)
+            /\ UNCHANGED <<v_vote_granted, v_state, v_history>>
+    /\ UNCHANGED <<v_current_term, v_voted_for, v_log, v_snapshot>>
              
 HandleVoteResponse(msg) ==
     /\ msg.name = VoteResponse
-    /\ __HandleVoteResponse(msg.dest, msg.source, msg.payload)
     /\ LET actions1 == Action(ActionInput, msg)
            actions0 == ActionSeqCheck
-       IN SetAction(__action__, actions0 \o actions1)
-    /\ UNCHANGED <<v_channel, v_history>>
+       IN __HandleVoteResponse(msg.dest, msg.source, msg.payload, actions0 \o actions1)
+    /\ UNCHANGED <<v_channel>>
 
 \* End of message handlers.
 ----
-
-VoteRestartNode(i) ==
-    /\ LET actions1 == Action(ActionInternal, MessageLocal(i, __ActionRestartNode,  {}))
-           actions0 == ActionSeqCheck
-       IN SetAction(__action__,  actions0 \o actions1)
-    /\ v_state' = [v_state EXCEPT ![i] = Follower]
-    /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] = {}]
-    /\ UNCHANGED <<
-        v_channel,
-        v_current_term, 
-        v_snapshot,
-        v_log,
-        v_voted_for,
-        v_history
-      >>
 
 
 NextVote ==
     \/ \E m \in v_channel : HandleVoteRequest(m)
     \/ \E m \in v_channel : HandleVoteResponse(m)
-    \/ \E i \in NODE_ID : BecomeLeader(i)
     \/ \E i \in NODE_ID : VoteTimeoutRequestVote(i, MAX_TERM)
 
     
