@@ -219,7 +219,6 @@ BecomeLeader(i) ==
         IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
     /\ LET actions1 == Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
        IN 
-       SetAction(__action__, actions1)
     /\ UNCHANGED <<v_channel, v_current_term, v_voted_for, v_log, v_snapshot>>
 
 \* NODE_ID i receives a RequestVote response from server j with
