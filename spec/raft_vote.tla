@@ -160,7 +160,7 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                     _msg_payload.last_log_term, 
                     _msg_payload.last_log_index)
         payload == [
-                term |-> v_current_term[_node_id],
+                term |-> term,
                 vote_granted |-> grant
             ]
         reply ==  Message(_node_id, _from_node_id, VoteResponse, payload)
@@ -174,7 +174,6 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                             /\ UNCHANGED v_voted_for 
                            )
                        )
-                    /\ SetAction(__action__, actions0 \o AppendActionSeq(_action_seq, Action(ActionOutput, reply)))
                     /\ UNCHANGED <<v_current_term>>        
              ELSE /\ (\/ ( /\ grant 
                            \* update voted for and current_term
@@ -185,8 +184,8 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                            /\ UNCHANGED <<v_voted_for, v_current_term>>
                          )     
                      )
-                  /\ SetAction(__action__, actions0 \o _action_seq)
              ) 
+        /\ SetAction(__action__, actions0 \o _action_seq \o Action(ActionOutput, reply))
         /\ v_channel' = WithMessage(reply, v_channel)   
         /\ UNCHANGED << 
                 v_vote_granted,
@@ -219,9 +218,8 @@ BecomeLeader(i) ==
         ] 
         IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
     /\ LET actions1 == Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
-           actions0 == ActionSeqCheck
        IN 
-       SetAction(__action__, actions0 \o actions1)
+       SetAction(__action__, actions1)
     /\ UNCHANGED <<v_channel, v_current_term, v_voted_for, v_log, v_snapshot>>
 
 \* NODE_ID i receives a RequestVote response from server j with
@@ -230,7 +228,7 @@ __HandleVoteResponse(i, _from_node, _m) ==
     \* This tallies votes even when the current v_state is not Candidate, but
     \* they won't be looked at, so it doesn't matter.
     /\ IF _m.term = v_current_term[i] THEN
-            /\ v_state[i] = Candidate 
+            /\ v_state[i] \in {Candidate, Leader} 
             /\ (\/( /\ _m.vote_granted
                     /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] =
                                             v_vote_granted[i] \cup {_from_node}]                
@@ -247,7 +245,7 @@ __HandleVoteResponse(i, _from_node, _m) ==
 HandleVoteResponse(msg) ==
     /\ msg.name = VoteResponse
     /\ __HandleVoteResponse(msg.dest, msg.source, msg.payload)
-    /\ LET actions1 == Action(ActionInternal, msg)
+    /\ LET actions1 == Action(ActionInput, msg)
            actions0 == ActionSeqCheck
        IN SetAction(__action__, actions0 \o actions1)
     /\ UNCHANGED <<v_channel, v_history>>
