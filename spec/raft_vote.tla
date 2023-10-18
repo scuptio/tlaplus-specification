@@ -54,6 +54,7 @@ vars_view == <<
 >>
 
 __ActionInit == "DTMTesting::Setup"
+__ActionCheck == "DTMTesting::Check"
 __ActionBecomeLeader == "DTMTesting::BecomeLeader"
 __ActionTimeoutRequestVote == "DTMTesting::TimeoutRequestVote"
 __ActionRestartNode == "DTMTesting::Restart"
@@ -67,7 +68,14 @@ _RaftVariables(_nid) ==
         voted_for |-> v_voted_for[_nid]
     ]
 
-
+ActionSeqCheck ==
+    ActionsFromHandle(
+            _RaftVariables,
+            NODE_ID, 
+            ActionInput, 
+            __ActionCheck
+       )
+               
 InitVote ==
     /\ ( IF STATE_DB_PATH = "" THEN
         InitSaftyStateTrival(
@@ -129,8 +137,9 @@ VoteTimeoutRequestVote(_node_id, _max_term) ==
             messages == MessageSet({_node_id}, NODE_ID \ {_node_id}, VoteRequest,  payload)
             actions_input == Action(ActionInput, Message(_node_id, _node_id, __ActionTimeoutRequestVote, {}))
             actions_output == Actions(ActionOutput, messages)
+            actions0 == ActionSeqCheck
         IN /\ v_channel' = WithMessageSet(messages, v_channel)
-           /\ SetAction(__action__, actions_input \o actions_output)
+           /\ SetAction(__action__, actions0 \o actions_input \o actions_output)
     /\ UNCHANGED <<
             v_log, 
             v_snapshot,
@@ -155,6 +164,7 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                 vote_granted |-> grant
             ]
         reply ==  Message(_node_id, _from_node_id, VoteResponse, payload)
+        actions0 == ActionSeqCheck
     IN /\  (IF _msg_payload.term <= v_current_term[_node_id] THEN
 
                     /\ (\/ (/\ grant
@@ -164,7 +174,7 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                             /\ UNCHANGED v_voted_for 
                            )
                        )
-                    /\ SetAction(__action__, AppendActionSeq(_action_seq, Action(ActionOutput, reply)))
+                    /\ SetAction(__action__, actions0 \o AppendActionSeq(_action_seq, Action(ActionOutput, reply)))
                     /\ UNCHANGED <<v_current_term>>        
              ELSE /\ (\/ ( /\ grant 
                            \* update voted for and current_term
@@ -175,7 +185,7 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, _action_seq) ==
                            /\ UNCHANGED <<v_voted_for, v_current_term>>
                          )     
                      )
-                  /\ SetAction(__action__, _action_seq)
+                  /\ SetAction(__action__, actions0 \o _action_seq)
              ) 
         /\ v_channel' = WithMessage(reply, v_channel)   
         /\ UNCHANGED << 
@@ -208,8 +218,10 @@ BecomeLeader(i) ==
             ]
         ] 
         IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
-    /\ LET action == Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
-       IN SetAction(__action__, action)
+    /\ LET actions1 == Action(ActionInternal, Message(i, i, __ActionBecomeLeader, {}))
+           actions0 == ActionSeqCheck
+       IN 
+       SetAction(__action__, actions0 \o actions1)
     /\ UNCHANGED <<v_channel, v_current_term, v_voted_for, v_log, v_snapshot>>
 
 \* NODE_ID i receives a RequestVote response from server j with
@@ -235,16 +247,18 @@ __HandleVoteResponse(i, _from_node, _m) ==
 HandleVoteResponse(msg) ==
     /\ msg.name = VoteResponse
     /\ __HandleVoteResponse(msg.dest, msg.source, msg.payload)
-    /\ LET action_seq == Action(ActionInternal, msg)
-       IN SetAction(__action__, action_seq)
+    /\ LET actions1 == Action(ActionInternal, msg)
+           actions0 == ActionSeqCheck
+       IN SetAction(__action__, actions0 \o actions1)
     /\ UNCHANGED <<v_channel, v_history>>
 
 \* End of message handlers.
 ----
 
 VoteRestartNode(i) ==
-    /\ LET action == Action(ActionInternal, MessageLocal(i, __ActionRestartNode,  {}))
-       IN SetAction(__action__,  action)
+    /\ LET actions1 == Action(ActionInternal, MessageLocal(i, __ActionRestartNode,  {}))
+           actions0 == ActionSeqCheck
+       IN SetAction(__action__,  actions0 \o actions1)
     /\ v_state' = [v_state EXCEPT ![i] = Follower]
     /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] = {}]
     /\ UNCHANGED <<
@@ -260,7 +274,6 @@ VoteRestartNode(i) ==
 NextVote ==
     \/ \E m \in v_channel : HandleVoteRequest(m)
     \/ \E m \in v_channel : HandleVoteResponse(m)
-    \/ \E i \in NODE_ID : VoteRestartNode(i)
     \/ \E i \in NODE_ID : BecomeLeader(i)
     \/ \E i \in NODE_ID : VoteTimeoutRequestVote(i, MAX_TERM)
 

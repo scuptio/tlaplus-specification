@@ -12,22 +12,17 @@ Leader == "Leader"
 PreCandidate == "PreCandidate"
 
 \* message types
-VoteRequest == "RMsg::VoteReq"
-VoteResponse == "RMsg::VoteResp"
+VoteRequest == "VoteReq"
+VoteResponse == "VoteResp"
                  
-AppendRequest == "RMsg::AppendReq"
-AppendResponse == "RMsg::AppendResp"
+AppendRequest == "AppendReq"
+AppendResponse == "AppendResp"
 
-PreVoteRequest == "RMsg::PreVoteReq"
-PreVoteResponse == "RMsg::PreVoteResp"
+PreVoteRequest == "PreVoteReq"
+PreVoteResponse == "PreVoteResp"
 
-ApplySnapshot == "RMsg::ApplySnapshotReq"
-ApplySnapshotResponse == "RMsg::ApplySnapshotResp"
-
-__MsgInitRaft           == "DSMsg::InitRaft"
-__MsgRequestPreVote     == "DSMsg::RequestPreVote"
-__MsgRestartNode        == "DSMsg::RestartNode"
-__MsgBecomeCandidate    == "DSMsg::BecomeCandidate"
+ApplySnapshot == "ApplySnapshotReq"
+ApplySnapshotResponse == "ApplySnapshotResp"
 
 
 ReceiveMessageAction(_var, m) ==
