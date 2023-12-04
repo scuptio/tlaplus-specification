@@ -21,9 +21,26 @@ AppendResponse == "AppendResp"
 PreVoteRequest == "PreVoteReq"
 PreVoteResponse == "PreVoteResp"
 
-ApplySnapshot == "ApplySnapshotReq"
-ApplySnapshotResponse == "ApplySnapshotResp"
+ApplyReq == "ApplyReq"
+ApplyResp== "ApplyResp"
 
+
+__ActionInit == "DTMTesting::Setup"
+__ActionCheck == "DTMTesting::Check"
+__ActionHandleUpdateTerm == "DTMTesting::UpdateTerm"
+__ActionRequestVote == "DTMTesting::RequestVote"
+__ActionAppendLog == "DTMTesting::AppendLog"
+__ActionBecomeLeader == "DTMTesting::BecomeLeader"
+__ActionRestartNode == "DTMTesting::Restart"
+__ActionHandleVoteRequest == "DTMTesting::HandleVoteReq"
+__ActionHandleVoteResponse == "DTMTesting::HandleVoteResp"
+__ActionHandleAppendLogRequest == "DTMTesting::HandleAppendReq"
+__ActionHandleAppendLogResponse == "DTMTesting::HandleAppendResp"
+__ActionClientRequest == "DTMTesting::ClientWriteLog"
+__ActionAdvanceCommitIndex == "DTMTesting::AdvanceCommitIndex"
+__ActionLogCompaction == "DTMTesting::LogCompaction"
+__ActionRestart == "DTMTesting::Restart"
+__ActionHandleApplySnapshotRequest == "DTMTesting::HandleApplyReq"
 
 ReceiveMessageAction(_var, m) ==
     LET action == Action(ActionInput, m)
@@ -149,7 +166,7 @@ MessagesDomain(_max_term, _value_set, _node_ids) ==
      ]       
     \cup 
      [
-        msg_type            : {ApplySnapshot}, 
+        msg_type            : {ApplyReq}, 
         term                : 1.._max_term,
         snapshot_term       : 1.._max_term,
         snapshot_index      : 1..Len(_value_set),
@@ -396,14 +413,19 @@ InvariantLogTermGrow(
     _snapshot,
     _node_id
     ) ==
-    /\ \A i, j \in DOMAIN _log[_node_id]:
+    IF /\ \A i, j \in DOMAIN _log[_node_id]:
         IF i < j THEN
             _log[_node_id][i].term <= _log[_node_id][j].term 
         ELSE
             TRUE
-    /\ \A i \in DOMAIN _log[_node_id]:
+       /\ \A i \in DOMAIN _log[_node_id]:
         _snapshot[_node_id].term <= _log[_node_id][i].term
-
+    THEN
+        TRUE
+    ELSE
+        /\ PrintT(<<_log, _snapshot, _node_id>>)
+        /\ FALSE
+        
 \* Lemma 8.  Immediately committed entries are committed.
 InvariantImmediatelyCommitted(
     _immediately_committed,
@@ -501,22 +523,47 @@ OverlappedQuorum(
         IN new_quorum \cap old_quorum
 
         
-LogHasValue(_log, _id,  _value) ==
-   \E i \in DOMAIN _log[_id]: (
-        /\ i <= Len(_log[_id])
-        /\ i >= 1
-        /\ _log[_id][i].value = _value
-   )
+LogHasValue(_log, _snapshot, _id,  _value) ==
+    \/ \E v \in _snapshot[_id].value : v.value = _value
+    \/  \E i \in DOMAIN _log[_id]: (
+            /\ i <= Len(_log[_id])
+            /\ i >= 1
+            /\ _log[_id][i].value = _value
+         )
 
 \* The term of the last entry in a server log, or minimum term(0) if the log is empty.
-LastLogTerm(_log) == 
+LastLogTerm(_log, _snapshot) == 
     IF Len(_log) = 0 THEN 
-        0 
+        _snapshot.term
     ELSE 
         _log[Len(_log)].term
 
 
-LastLogIndex(_log) == Len(_log)
+LastLogIndex(_log, _snapshot) == 
+    IF Len(_log) = 0 THEN 
+        _snapshot.index
+    ELSE 
+        _log[Len(_log)].index
+
+\* return _log's offset index (started from 1)
+\* return 0 value if the _index is invalid(too small, or too big)
+LogIndexToOffset(_log, _snapshot, _index) ==
+    IF _snapshot.index >= _index THEN
+        0
+    ELSE (LET n == _index - _snapshot.index
+          IN (IF Len(_log) < n THEN \* index start from 1 , so not include =n here
+                0
+             ELSE
+                n 
+            )
+         )  
+LogTermOfIndex(_log, _snapshot, _index) ==
+    LET offset == LogIndexToOffset(_log, _snapshot, _index)
+    IN  (IF offset = 0 THEN 
+            0
+         ELSE 
+            _log[offset].term
+        )
 
 \* Used by PV and Vote
 
@@ -529,33 +576,34 @@ TermLE(_node_ids, _current_term, _max_term) ==
 
 IsLastLogTermIndexOK(
     _log, 
-    _node_ids, 
+    _snapshot,
     _last_log_term, 
     _last_log_index
 ) ==
-    \/ _last_log_term > LastLogTerm(_log[_node_ids])
-    \/ (/\ _last_log_term = LastLogTerm(_log[_node_ids])
-        /\ _last_log_index >= Len(_log[_node_ids]))
+    \/ _last_log_term > LastLogTerm(_log, _snapshot)
+    \/ (/\ _last_log_term = LastLogTerm(_log, _snapshot)
+        /\ _last_log_index >= LastLogIndex(_log, _snapshot)
+       )
 
 VoteCanGrant(
     _current_term, 
     _vote_log, 
+    _snapshot,
     _voted_for, 
-    _to_vote_for_node_id, 
-    _node_id, 
+    _to_vote_for_node_id,
     _term, 
     _last_log_term, 
     _last_log_index
 ) ==
     /\ IsLastLogTermIndexOK(
         _vote_log, 
-        _node_id, 
+        _snapshot,
         _last_log_term, 
         _last_log_index)
-    /\ (\/ _term > _current_term[_node_id]
-        \/  (/\ _term = _current_term[_node_id]
-            /\ (\/ _voted_for[_node_id] = INVALID_NODE_ID
-                \/ _voted_for[_node_id] = _to_vote_for_node_id
+    /\ (\/ _term > _current_term
+        \/  (/\ _term = _current_term
+            /\ (\/ _voted_for = INVALID_NODE_ID
+                \/ _voted_for = _to_vote_for_node_id
                 )
             )
         )
@@ -638,12 +686,12 @@ CommittedEntriesReachMajority(
 TypeOK ==
     TRUE
 
-InvalidTerm(_term, _max_term) ==
+ValidTerm(_term, _max_term) ==
     /\ _term > 0
     /\ _term <= _max_term
 
 LogEntryTypeOK(_entry, _max_term, _value_set) ==
-    /\ InvalidTerm(_entry.term, _max_term)
+    /\ ValidTerm(_entry.term, _max_term)
     /\ _entry.value \in _value_set
 
 \* Log Entry value valid
@@ -654,6 +702,7 @@ LogEntriesOK(_log, _snapshot, _id, _max_term, _value_set) ==
             \/ (/\ Len(_local_log) > 0
                 /\ \A i \in 1..Len(_local_log):
                     /\ LogEntryTypeOK(_local_log[i], _max_term, _value_set)
+                    /\ _local_log[i].index = _snapshot[_id].index + i
                 /\ ~( \E i, j \in 1..Len(_local_log):
                         /\ i # j
                         /\ _local_log[i].value = _local_log[j].value
@@ -679,22 +728,23 @@ LogCommitIndexOK(
                             _log[other_n][i] = _log[_id][i]  
            )
 
+
 VoteGrantOK(
     _current_term, 
     _log, 
+    _snapshot,
     _voted_for,
-    _id,
     _to_vote_for_id
 ) ==
-    LET last_log_index == LastLogIndex(_log[_to_vote_for_id])
-        last_log_term == LastLogTerm(_log[_to_vote_for_id])
+    LET last_log_index == LastLogIndex(_log[_to_vote_for_id], _snapshot[_to_vote_for_id])
+        last_log_term == LastLogTerm(_log[_to_vote_for_id], _snapshot[_to_vote_for_id])
         term == _current_term[_to_vote_for_id]
     IN  VoteCanGrant(
             _current_term, 
             _log, 
+            _snapshot,
             _voted_for, 
-            _to_vote_for_id, 
-            _id, 
+            _to_vote_for_id,
             term, 
             last_log_term, 
             last_log_index
@@ -703,22 +753,46 @@ VoteGrantOK(
 VotedForOK(
     _current_term, 
     _log, 
+    _snapshot,
     _voted_for,
     _id
 ) ==
-    \/ _voted_for[_id] = INVALID_NODE_ID
-    \/( /\ _voted_for[_id] /= INVALID_NODE_ID
+    \/ _voted_for = INVALID_NODE_ID
+    \/( /\ _voted_for /= INVALID_NODE_ID
         /\ LET _to_vote_for_id ==  _voted_for[_id]
            IN  \/ _id = _to_vote_for_id
                 \/( /\ _id # _to_vote_for_id
                     /\ VoteGrantOK(
                         _current_term, 
                         _log, 
+                        _snapshot,
                         _voted_for,
-                        _id,
                         _to_vote_for_id)
                 )
         )
+
+
+AfterUpdateTermInner(
+    _term,
+    _current_term,
+    _state,
+    _voted_for,
+    _invalid_node_id
+) ==
+    IF _term > _current_term THEN
+        [
+            changed |-> TRUE,
+            term |-> _term,
+            voted_for |-> _invalid_node_id,
+            state |-> Follower
+        ]
+    ELSE
+        [
+            changed |-> FALSE,
+            term |-> _current_term,
+            voted_for |-> _voted_for,
+            state |-> _state
+        ]
 
 
 BaseStateOK(
@@ -733,24 +807,38 @@ BaseStateOK(
 ) ==
     /\ \A i \in _node_ids:
         (
-        /\ InvalidTerm(_current_term[i], _max_term)
-        /\ LogEntriesOK(_log, _snapshot, i, _max_term, _value_set)
-        /\ VotedForOK(_current_term, _log, _voted_for, i)
+        /\ ValidTerm(_current_term[i], _max_term)
         /\ InvariantTerm(
             _current_term,
             _log,
             _snapshot,
             i
             )
+        /\ VotedForOK(_current_term[i], _log[i], _snapshot[i], _voted_for[i], i)
+        )
+        
+LogTermGrow(
+                _log,
+            _snapshot,
+            _node_ids
+) ==
+    /\ \A i \in _node_ids:
         /\ InvariantLogTermGrow(
             _log,
             _snapshot,
             i
             )
+    
+LogOK( 
+    _current_term,
+    _log,
+    _snapshot,
+    _node_ids,
+    _value_set,
+    _max_term) ==
+    /\ \A i \in _node_ids:
+        /\ LogEntriesOK(_log, _snapshot, i, _max_term, _value_set)
 
-        )
-    /\ InvariantLogPrefix(_log, _snapshot, _node_ids)
-    /\ InvariantSnapshotCommit(_log, _snapshot, _node_ids)
 
 CommitStateOK(
     _log,
@@ -823,7 +911,7 @@ InitSaftyStateTrival(
     /\ _current_term \in [_node_ids -> {1} ]
     /\ _log \in [_node_ids -> {<<>>} ]
     /\ _voted_for \in [_node_ids -> {INVALID_NODE_ID} ]
-    /\ _snapshot \in [_node_ids -> [term: {0}, index: {0}] ]
+    /\ _snapshot \in [_node_ids -> [term: {0}, index: {0}, value: {{}}] ]
     /\ BaseStateOK(
         _state,
         _current_term,
@@ -893,53 +981,5 @@ InitSaftyStateDefault(
     )
     
 
-(*
-CONSTANT MAX_TERM
-CONSTANT VALUE
-CONSTANT NODE_ID
-
-VARIABLE c_voted_for
-VARIABLE c_vote_granted
-VARIABLE c_state
-
-
-VARIABLE c_log
-VARIABLE c_current_term
-
-VARIABLE __action__
-
-
-c_vars == <<
-    c_voted_for,
-    c_vote_granted,
-    c_state,
-    c_log,
-    c_current_term
->>
-
-VarsC == <<
-    c_vars
->>
-
-
-InitC ==
-    /\ InitSaftyStateDefault(
-        c_state,
-        c_current_term,
-        c_log,
-        c_voted_for,
-        NODE_ID,
-        VALUE,
-        MAX_TERM)
-    /\ c_vote_granted = InitVoteGranted(NODE_ID)
-
-
-NextC == 
-    \/ \E i \in NODE_ID : TRUE /\ UNCHANGED <<VarsC>>
-
-    
-Spec == 
-    InitC
-    /\ [][NextC]_VarsC
-*)    
+ 
 =============================================================================

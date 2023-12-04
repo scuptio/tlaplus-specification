@@ -1,170 +1,229 @@
 --------------------------------- MODULE raft_replicate ---------------------------------
 
 
-EXTENDS channel, history, raft_replicate_common,  Naturals, FiniteSets, Sequences, TLC
 
+EXTENDS 
+    action, 
+    raft_common, 
+    raft_replicate_common,  
+    history, 
+    Naturals, 
+    FiniteSets, 
+    Sequences, 
+    TLC
+    
+CONSTANT MAX_TERM
+CONSTANT VALUE
+CONSTANT RECONFIG_VALUE
+CONSTANT NODE_ID
+CONSTANT CHECK_SAFETY
+CONSTANT ENABLE_ACTION
+CONSTANT DB_STATE_PATH
+CONSTANT DB_ACTION_PATH
+CONSTANT APPEND_ENTRIES_MAX
 ----
 
-CONSTANT ENABLE_ACTION
-CONSTANT ENABLE_CHECK_INVARIANTS
-CONSTANT APPEND_ENTRIES_MAX
-CONSTANT MAX_TERM
-CONSTANT INIT_VALUE
-CONSTANT APPEND_VALUE
-CONSTANT RECONFIG_VALUE
-CONSTANT COMPACTION_VALUE
-CONSTANT INIT_NODE_ID
 
-NODE_ID == INIT_NODE_ID
 
-VARIABLE r_state
-VARIABLE r_log
-VARIABLE r_commit_index
-VARIABLE r_next_index
-VARIABLE r_match_index
-VARIABLE r_acked_value
+VARIABLE v_state
+VARIABLE v_log
+VARIABLE v_voted_for
+VARIABLE v_snapshot
+VARIABLE v_commit_index
+VARIABLE v_next_index
+VARIABLE v_match_index
+VARIABLE v_acked_value
+VARIABLE v_messages
 
 \* readonly
-VARIABLE r_current_term
-VARIABLE r_voted_for
+VARIABLE v_current_term
 
-VARIABLE r_history
-VARIABLE r_imdt_committed
+VARIABLE v_history
+
+
+VARIABLE v_pc
+VARIABLE v_pc_context
 VARIABLE __action__
 
 
-VARIABLE r_config
-
-VARIABLE r_snapshot
-
-r_vars_config == <<
-    r_config
->>
-
-r_vars_snapshot == <<
-    r_snapshot
->>
-
-r_vars_replicate == <<
-    r_state,
-    r_log,
-    r_current_term,
-    r_commit_index,
-    r_next_index,
-    r_match_index,
-    r_acked_value,
-    r_voted_for
->>
-
-r_vars_helper == <<
-    r_history,
-    r_imdt_committed
->>
-r_vars == <<
-    r_state,
-    r_log,
-    r_current_term,
-    r_commit_index,
-    r_next_index,
-    r_match_index,
-    r_acked_value,
-    r_voted_for,
-    r_history,
-    r_imdt_committed,
-    r_vars_config,
-    r_vars_snapshot
->>
-
-VarsR == <<
-    r_vars,
-    VarsChannel,
+vars == <<
+    v_state,
+    v_current_term,
+    v_log, 
+    v_voted_for,
+    v_snapshot,
+    v_commit_index,
+    v_next_index,
+    v_match_index,
+    v_messages,
+    v_pc,
+    v_pc_context,
+    v_history,
+    v_acked_value,    
     __action__
 >>
 
+vars_view == <<
+    v_state,
+    v_current_term,
+    v_log, 
+    v_voted_for,
+    v_snapshot,
+    v_commit_index,
+    v_next_index,
+    v_match_index,
+    v_messages,
+    v_pc
+>>
 
-InitR ==
-    /\ InitSaftyStateDefault(
-        r_state,
-        r_current_term,
-        r_log,
-        r_snapshot,
-        r_voted_for,
-        NODE_ID,
-        INIT_VALUE,
-        MAX_TERM
-        )
-    /\ InitChannel
-    /\ r_next_index = InitNextIndexRole(NODE_ID, r_state, r_log)
-    /\ r_match_index = InitMatchIndex(NODE_ID)
-    /\ r_acked_value = InitAckedValue
-    /\ r_commit_index = InitCommitIndex(NODE_ID)
-    /\ LET vars == [
-                state |-> r_state,
-                current_term |-> r_current_term,
-                log |-> r_log,
-                snapshot |-> r_snapshot,
-                voted_for |-> r_voted_for,
-                next_index |-> r_next_index,
-                match_index |-> r_match_index
-            ]
-       IN __action__ = ActionFromVars(vars, NODE_ID, ActionInput, "Init", ENABLE_ACTION)
-    /\ r_imdt_committed = {}
-    /\ r_config = [i \in NODE_ID |-> [vote |-> INIT_NODE_ID, replicate |-> INIT_NODE_ID, add |-> {}, remove |->{}]]
-    /\ InitHistoryWithElection(
-            r_history, r_state,
-            r_current_term,
-            r_log,
-            r_snapshot,
-            NODE_ID)
-----
-\* Define initial values for all variables
+vars_except_action_and_pc == <<
+    v_state,
+    v_current_term,
+    v_log, 
+    v_voted_for,
+    v_snapshot,
+    v_commit_index,
+    v_next_index,
+    v_match_index,
+    v_messages,
+    v_history,
+    v_acked_value
+>>
 
+vars_pc == <<v_pc, v_pc_context>>
 
-MessageAppendResponse(
-    _source,
-    _dest,
-    _term,
-    _append_success,
-    _match_index
-) ==
+_RaftVariables(_nid) ==
     [
-        msg_type        |-> AppendResponse,
-        term            |-> _term,
-        append_success  |-> _append_success,
-        match_index     |-> _match_index,
-        source          |-> _source,
-        dest            |-> _dest
+        state |-> v_state[_nid],
+        current_term |-> v_current_term[_nid],
+        log |-> v_log[_nid],
+        snapshot |-> v_snapshot[_nid],
+        voted_for |-> v_voted_for[_nid],
+        vote_granted |-> {},
+        commit_index |-> v_commit_index[_nid],
+        match_index |-> v_match_index[_nid],
+        next_index |-> v_next_index[_nid]
     ]
+
+
+
+
+ActionCheckState(_node_id) ==
+    ActionsFromHandle(
+            _RaftVariables,
+            {_node_id}, 
+            ActionCheck, 
+            __ActionCheck
+       )
+
+InitActionSeqSetup ==
+    ActionsFromHandle(
+            _RaftVariables,
+            NODE_ID, 
+            ActionSetup, 
+            __ActionInit
+       )
+       
+ActionSeqSetupAll ==
+    ActionsFromHandle(
+            _RaftVariables,
+            NODE_ID, 
+            ActionSetup, 
+            __ActionInit
+       )
+
+    
+SaveActions ==
+    DB_ACTION_PATH /= "" =>
+        SaveValue(__action__', DB_ACTION_PATH)
+
+SaveInitActions ==
+    DB_ACTION_PATH /= "" =>
+        SaveValue(__action__, DB_ACTION_PATH)
+
+ContextNull == [null |-> "null"]
+ContextHasMessage(_context) == "message" \in DOMAIN _context
+                
+Init ==
+    /\ IF  DB_STATE_PATH = "" THEN (
+            InitSaftyStateTrival(
+                v_state,
+                v_current_term,
+                v_log,
+                v_snapshot,
+                v_voted_for,
+                NODE_ID,
+                VALUE,
+                MAX_TERM,
+                1, 
+                1
+                )
+         )
+         ELSE (LET s == QueryAllValues(DB_STATE_PATH)
+                IN /\ \E e \in s:
+                    /\ v_state = e.state
+                    /\ v_current_term = e.current_term
+                    /\ v_log = e.log
+                    /\ v_snapshot = e.snapshot
+                    /\ v_voted_for = e.voted_for
+               )   
+    /\ v_messages = {}
+    /\ v_commit_index = [i \in NODE_ID |-> v_snapshot[i].index]
+    /\ v_next_index = [i \in NODE_ID |-> 
+            IF v_state[i] = Leader THEN
+                [j \in NODE_ID |-> LastLogIndex(v_log[i], v_snapshot[i])]
+            ELSE 
+                [j \in NODE_ID |-> 1]
+            ]
+    /\ v_match_index = [i \in NODE_ID |-> [j \in NODE_ID |-> 0]]
+
+    /\ v_history = <<>>
+    /\ v_acked_value = {}
+    /\ v_pc = [i \in NODE_ID |-> [state |-> "next"]]
+    /\ v_pc_context = [i \in NODE_ID |-> ContextNull]
+    /\ LET actions == InitActionSeqSetup
+        IN InitAction(
+            __action__,
+            actions,
+            actions
+        )
+    /\ SaveInitActions
+
                                                
 RECURSIVE AppendRequestMessages(_, _, _, _, _, _, _, _, _)
 
 LastEntryIndex(_log, _next_index, i, j) ==
-    Min({Len(_log[i]), _next_index[i][j]})
+    Min({
+        IF Len(_log[i]) > 0 THEN
+            _log[i][Len(_log[i])].index 
+        ELSE
+            0,
+        _next_index[i][j]
+    })
 
 PrevLogIndex(_next_index, i, j) ==
-    _next_index[i][j] - 1
+    IF _next_index[i][j] > 0 THEN
+        _next_index[i][j] - 1
+    ELSE
+        0
 
-LastOrCommitIndex(_log, _next_index, _commit_index, i, j) ==
-    LET last_index == LastEntryIndex(_log, _next_index, i, j)
-    IN Min({_commit_index[i], last_index})
 
 
 MessageApplySnapshot(
     _source,
     _dest,
     _term,
-    _snapshot_last_index,
-    _snapshot_last_term
+    _snapshot
 ) == 
-     [
-        msg_type            |-> ApplySnapshot, 
-        term                |-> _term,
-        snapshot_term       |-> _snapshot_last_term,
-        snapshot_index      |-> _snapshot_last_index,
-        snapshot_value      |-> {},
-        source              |-> _source,
-        dest                |-> _dest
-     ]
+     Message(_source, _dest, ApplyReq,
+         [
+            source_nid      |-> _source,
+            term     |-> _term,
+            id       |-> "",
+            snapshot |-> _snapshot,
+            iter      |-> <<>>
+         ]
+     )
 
 MessageAppendRequest(
     _source,
@@ -175,39 +234,37 @@ MessageAppendRequest(
     _log_entries,
     _commit_index,
     _leader_log,
-    _leader_snapshot_last_index,
-    _leader_snapshot_last_term,
+    _leader_snapshot,
     _aux_payload
 ) ==
-    IF _aux_payload THEN
-        [
-            msg_type        |-> AppendRequest,
-            term            |-> _term,
-            prev_log_index  |-> _prev_log_index,
-            prev_log_term   |-> _prev_log_term,
-            log_entries     |-> _log_entries,
-            commit_index    |-> _commit_index,
-            source          |-> _source,
-            dest            |-> _dest,
-            __leader_log    |-> _leader_log,
-            __leader_snapshot |-> 
-                    [
-                        index|-> _leader_snapshot_last_index,
-                        term |-> _leader_snapshot_last_term
-                    ]
-        ]
-    ELSE
-        [
-            msg_type        |-> AppendRequest,
-            term            |-> _term,
-            prev_log_index  |-> _prev_log_index,
-            prev_log_term   |-> _prev_log_term,
-            log_entries     |-> _log_entries,
-            commit_index    |-> _commit_index,
-            source          |-> _source,
-            dest            |-> _dest
-        ]          
-                      
+    LET  payload == 
+                IF _aux_payload THEN
+            
+                        [
+                            source_nid      |-> _source,
+                            term            |-> _term,
+                            prev_log_index  |-> _prev_log_index,
+                            prev_log_term   |-> _prev_log_term,
+                            log_entries     |-> _log_entries,
+                            commit_index    |-> _commit_index,
+                            
+                            \* only valid for checking safty invariant
+                            leader_log    |-> _leader_log,
+                            leader_snapshot |-> _leader_snapshot
+                        ]
+                    
+                ELSE
+                        [
+                            source_nid      |-> _source,
+                            term            |-> _term,
+                            prev_log_index  |-> _prev_log_index,
+                            prev_log_term   |-> _prev_log_term,
+                            log_entries     |-> _log_entries,
+                            commit_index    |-> _commit_index
+                        ]          
+    IN Message(_source, _dest, AppendRequest, payload)
+    
+                    
 AppendRequestMessages(
     _log, 
     _next_index, 
@@ -228,8 +285,7 @@ AppendRequestMessages(
                         i, 
                         j,
                         _current_term[i],
-                        _snapshot[i].index,
-                        _snapshot[i].term)
+                        _snapshot[i])
                     IN apply_snapshot_message
                 )
                 ELSE (
@@ -245,7 +301,7 @@ AppendRequestMessages(
                                 i, 
                                 prev_log_index + 1, 
                                 _append_max)
-                        index == LastOrCommitIndex(_log, _next_index, _commit_index, i, j)
+                        commit_index == _commit_index[i]
                         append_message == MessageAppendRequest(
                                 i,                          \*_source,
                                 j,                          \*_dest,
@@ -253,11 +309,10 @@ AppendRequestMessages(
                                 prev_log_index,             \* _prev_log_index,
                                 prev_log_term,              \* _prev_log_term,
                                 entries,                    \* _log_entries,
-                                index,                      \* _commit_index,
+                                commit_index,                      \* _commit_index,
                                 _log[i],                    \* _leader_log,
-                                _snapshot[i].index,    \* _leader_snapshot_last_index,
-                                _snapshot[i].term,     \* _leader_snapshot_last_term,
-                                ENABLE_CHECK_INVARIANTS     \* _aux_payload
+                                _snapshot[i],               \* _leader_snapshot,
+                                CHECK_SAFETY     \* _aux_payload
                             )
                      IN append_message
                   ) \* end else
@@ -271,474 +326,444 @@ AppendRequestMessages(
                 servers \ {j}, 
                 msgs \cup {message}
             )
-     
-    
+
+                 
 \* Leader i sends j an AppendEntries request containing up to 1 entry.
 \* While implementations may want to send more than 1 at a time, this spec uses
 \* just 1 because it minimizes atomic regions without loss of generality.
-AppendEntries(i) ==
-    /\ r_state[i] = Leader
-    /\ LET node_ids == VoteNodeIds(
-                        r_config,
-                        i)
-            msgs == AppendRequestMessages(
-                r_log, r_next_index, 
-                r_commit_index, 
-                r_current_term,
-                r_snapshot,
-                APPEND_ENTRIES_MAX,
+AppendLogEntries(i) ==
+    /\ v_pc[i].state = "next"
+    /\ v_state[i] = Leader
+    /\ LET node_ids == NODE_ID
+           n == APPEND_ENTRIES_MAX 
+           msgs == AppendRequestMessages(
+                v_log, v_next_index, 
+                v_commit_index, 
+                v_current_term,
+                v_snapshot,
+                n,
                 i, node_ids \ {i}, {})
-       IN ChannelSend' = WithMessageSet(msgs, ChannelSend)
-    /\ NewAction(__action__, i, i, "AppendEntries", ActionInternal, {}, ENABLE_ACTION)
-    /\ UNCHANGED <<ChannelRecv, r_vars, r_history, r_imdt_committed,
-            r_vars_config,
-            r_vars_snapshot
-        >>
-
-AgreeIndex(node_ids, i, log, match_index) ==
-\* The set of servers that agree up through index.
-    LET Agree(index) == {i} \cup {k \in node_ids :
-                                         match_index[i][k] >= index}
-           \* The maximum indexes for which a quorum agrees
-        agree_indexes == {index \in 1..Len(log[i]) :
-                                Agree(index) \in QuorumOf(node_ids)}
-    IN agree_indexes
-    
-LeaderCanAdvanceCommitIndex(i, current_term, state, log, agree_index) ==
-    /\ state[i] = Leader
-    /\ agree_index /= {}
-    /\ log[i][Max(agree_index)].term = current_term[i]
-
-ImmediatelyCommit(
-    _immediately_commit,
-    _node_log,
-    _node_snapshot,
-    _commit_index,
-    _enable
-) == 
-    IF _enable THEN
-        LET  ic == {
-                l \in 
-                [   
-                    term : 1..MAX_TERM,
-                    index: 1.._commit_index
-                ]:
-                \E i \in 1..Len(_node_log):
-                    /\ l.index = i + _node_snapshot.index
-                    /\ l.term = _node_log[i].term    
-            }
-        IN _immediately_commit \cup ic
-    ELSE
-       _immediately_commit
-    
-\* r_commit_index CHANGED/UNCHANGED 
-__LeaderAdvanceCommitIndex(node_ids, i, match_index, _value_set) ==
-    CASE r_state[i] = Leader -> (
-       LET  agree_index == AgreeIndex(node_ids, i, r_log, r_match_index)
-            ok == LeaderCanAdvanceCommitIndex(i, r_current_term, r_state, r_log, agree_index)
-       IN  IF ok
-            THEN
-              LET new_commit_index ==  Max(agree_index)
-              IN \* update new value for r_commit_index'[i]
-                (/\ r_commit_index' = [r_commit_index EXCEPT ![i] = new_commit_index]
-                 /\ r_acked_value' = r_acked_value \cup {v \in _value_set : 
-                        \E index \in 1..Len(r_log[i]):
-                            /\ v = r_log[i][index].value 
-                            /\ index \in r_commit_index[i]+1..new_commit_index 
-                    }
-                 /\ r_imdt_committed' = ImmediatelyCommit(r_imdt_committed, r_log[i], r_snapshot[i], 
-                                                new_commit_index,
-                                                ENABLE_CHECK_INVARIANTS
-                                            )
-               )
-           ELSE
-              UNCHANGED <<r_commit_index, r_acked_value, r_imdt_committed>>
-    )
-    [] OTHER -> (
-        UNCHANGED <<r_commit_index, r_acked_value, r_imdt_committed>>
-    )
-
-----
-
-
+             actions0 == ActionSeqSetupAll
+             actions1 == ActionCheckState(i)
+             actions2 == Action(ActionInput, MessageLocalNP(i, __ActionAppendLog))
+             actions3 == Actions(ActionOutput, msgs)
+       IN /\ v_messages' = WithMessageSet(msgs, v_messages)
+          /\ SetAction(__action__, actions0, actions1 \o actions2 \o actions3)    
+    /\ UNCHANGED <<
+            v_commit_index, 
+            v_current_term, v_state, 
+            v_voted_for, v_snapshot, v_log, 
+            v_history,
+            v_match_index,
+            v_next_index,
+            v_acked_value,
+            vars_pc
+            >>
         
-FollowerAppendHistory(
-    _history,
-    _follower_node_id,
-    _new_follower_log,
-    _new_follower_snapshot,
-    _append_entries_msg,
-    _enable_check
-) ==
-    IF _enable_check THEN 
-        LET leader_log == _append_entries_msg.__leader_log
-            leader_snapshot == _append_entries_msg.__leader_snapshot
-            op == [
-                follower_append |-> [
-                    node_id |-> _follower_node_id,
-                    leader_log |-> leader_log,
-                    leader_snapshot |-> leader_snapshot,
-                    follower_log |-> _new_follower_log,
-                    follower_snapshot |-> _new_follower_snapshot
-                ]
-            ]
-        IN AppendHistory(_history, op, _enable_check)
-    ELSE
-        _history
-
-\* NODE_ID i receives an AppendEntries request from server j with
-\* m.term <= r_commit_index[i]. This just handles m.entries of length 0 or 1, but
-\* implementations could safely accept more by treating them the same as
-\* multiple independent requests of 1 entry.
-__HandleAppendRequest(i, j, m) ==
-    LET 
-        prev_log_index == m.prev_log_index
-        prev_log_term == m.prev_log_term
+_HandleAppendLog(_node_id, _from_node_id, _payload, _setup_action) ==
+    LET prev_log_index == _payload.prev_log_index
+        prev_log_term ==_payload.prev_log_term
         log_ok == LogPrevEntryOK(
-            r_log, 
-            r_snapshot,
-            i, prev_log_index, prev_log_term)
-        term == m.term
-        log_entries == m.log_entries
-
-    IN  
-    /\  ( \/ ( \* reject request
-                /\ RejectAppendLog(r_current_term, r_state, i, term, log_ok)
-                /\ LET reply_no == 
-                        MessageAppendResponse(
-                                i,      \* _source
-                                j,      \* _dest
-                                term,   \* _term
-                                FALSE,  \* _append_success
-                                0       \* _match_index
-                            )
-                   IN ChannelSend' = WithMessage(reply_no, ChannelSend)
-                /\ UNCHANGED <<
-                        r_voted_for,
-                        r_state, 
-                        r_commit_index,
-                        r_log,
-                        r_history,
-                        r_imdt_committed,
-                        r_vars_snapshot
-                    >>
-               )
-            \/ (\* return to follower replicate_state
-                /\ CandidateBecomeFollower(r_current_term, r_state, i, term)
-                /\ r_state' = [r_state EXCEPT ![i] = Follower]
-                /\ r_voted_for' = [r_voted_for EXCEPT ![i] = {}]
-                /\ UNCHANGED <<
-                        ChannelSend,
-                        r_commit_index,
-                        r_log,
-                        r_history,
-                        r_imdt_committed,
-                        r_vars_snapshot
-                    >>
-               )
-            \/ (\* accept request
-                /\ FollowerAcceptAppendLog(r_current_term, r_state, i, term, log_ok)
-                /\  (   CASE r_snapshot[i].index > prev_log_index -> (
-                               /\ LET reply_yes == MessageAppendResponse(
-                                                i,                      \* _source
-                                                j,                      \* _dest
-                                                r_current_term[i],      \* _term
-                                                TRUE,                   \* _append_success
-                                                r_snapshot[i].index       \* _match_index
-                                            )
-                                 IN ChannelSend' = WithMessage(reply_yes, ChannelSend)
-                              /\ UNCHANGED <<r_vars_snapshot, r_log, r_commit_index,
-                                        r_history, r_imdt_committed
-                                    >>
-                        ) 
-                        []OTHER -> (
-                            \* foreach log entry in log_entries seqneuce
-                            /\ LET  _entries == log_entries
-                                    snapshot_last_index == r_snapshot[i].index
-                                    snapshot_last_term == r_snapshot[i].term
-                                    prev_i == prev_log_index  - snapshot_last_index
-                                    l == LogAfterAppendEntries(
-                                                r_log, 
-                                                i, 
-                                                _entries, 
-                                                prev_i, 
-                                                RECONFIG_VALUE)
-                                    match_index == l.match_index + snapshot_last_index
-                                    reply_yes ==  MessageAppendResponse(
-                                                i,                      \* _source
-                                                j,                      \* _dest
-                                                r_current_term[i],      \* _term
-                                                TRUE,                   \* _append_success
-                                                match_index             \* _match_index
-                                                )
-                                IN 
-                                    /\ r_log' = [r_log EXCEPT ![i] = l.log]
-                                    /\ ChannelSend' = WithMessage(reply_yes, ChannelSend)
-                                    /\ IF r_log[i] = l.log THEN
-                                            /\ UNCHANGED <<r_history, r_imdt_committed>>
-                                       ELSE
-                                            /\ r_history' = FollowerAppendHistory(
-                                                            r_history, i, l.log, 
-                                                            [
-                                                                term |-> snapshot_last_term,
-                                                                index |-> snapshot_last_index
-                                                            ],
-                                                            m, ENABLE_CHECK_INVARIANTS)
-                            /\ r_commit_index' = [r_commit_index EXCEPT ![i] = m.commit_index]
-                            /\ UNCHANGED <<r_vars_snapshot>>
-                        ) 
+            v_log, 
+            v_snapshot,
+            _node_id, 
+            prev_log_index, 
+            prev_log_term)
+        term == _payload.term
+        log_entries == _payload.log_entries
+        leader_commit_index == _payload.commit_index
+        result == HandleAppendLogInner(
+                v_log,
+                v_snapshot,
+                v_current_term,
+                v_state,
+                v_history,
+                RECONFIG_VALUE,
+                _node_id,
+                _from_node_id,
+                prev_log_index,
+                prev_log_term,
+                term,
+                log_entries
+                )
+         action_handle_append == Action(ActionInternal, Message(_node_id, _node_id, __ActionHandleAppendLogRequest, _payload))
+    IN /\  (CASE  result.append_result = APPEND_RESULT_REJECT -> (
+                /\ LET reply_payload == [
+                            source_nid |-> _node_id,
+                            term |-> v_current_term[_node_id],
+                            append_success |-> FALSE,
+                            match_index |-> v_snapshot[_node_id].index
+                        ]
+                       reply_message == Message(_node_id, _from_node_id, AppendResponse, reply_payload)
+                       output_action == Action(ActionOutput, reply_message)
+                    IN  /\ v_messages' = WithMessage(reply_message, v_messages)
+                        /\ SetAction(__action__, _setup_action,   action_handle_append \o output_action)    
+                /\ UNCHANGED <<v_current_term, v_state, v_voted_for, v_log, v_snapshot,  v_history, v_commit_index>>
+            )
+            [] result.append_result = APPEND_RESULT_TO_FOLLOWER -> (
+                /\ v_state' = [v_state EXCEPT ![_node_id] = Follower]
+                /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = INVALID_NODE_ID]
+                /\ UNCHANGED <<v_current_term, v_log, v_snapshot, v_messages, v_history, v_commit_index>>
+                /\ SetAction(__action__, _setup_action,   action_handle_append)    
+            )
+            [] result.append_result = APPEND_RESULT_STALE_INDEX -> (
+                /\ LET reply_payload == [
+                            source_nid |-> _node_id,
+                            term |-> term,
+                            append_success |-> TRUE,
+                            match_index |-> v_snapshot[_node_id].index
+                        ]
+                       reply_message == Message(_node_id, _from_node_id, AppendResponse, reply_payload)
+                       output_action == Action(ActionOutput, reply_message)
+                    IN  /\ v_messages' = WithMessage(reply_message, v_messages)
+                        /\ SetAction(__action__, _setup_action, action_handle_append \o output_action)    
+                /\ UNCHANGED <<v_current_term, v_state, v_voted_for, v_log, v_snapshot, v_history, v_commit_index>>                         
+            )
+            [] result.append_result = APPEND_RESULT_ACCEPT -> (
+                /\ LET reply_payload == [
+                            source_nid |-> _node_id,
+                            term |-> term,
+                            append_success |-> TRUE, 
+                            match_index |-> result.match_index
+                        ]
+                       reply_message == Message(_node_id, _from_node_id, AppendResponse, reply_payload)
+                       output_action == Action(ActionOutput, reply_message)
+                    IN  (/\ v_messages' = WithMessage(reply_message, v_messages)
+                         /\ SetAction(__action__, _setup_action,    action_handle_append \o output_action)) 
+                /\ v_log' = [v_log EXCEPT ![_node_id] = result.log]
+                /\ LET last_log_index == LastLogIndex(v_log'[_node_id], v_snapshot[_node_id])
+                       commit_index == Min({last_log_index, leader_commit_index})
+                   IN 
+                        v_commit_index' = [v_commit_index EXCEPT ![_node_id] = commit_index]
+                /\ (IF CHECK_SAFETY 
+                    THEN (
+                        LET leader_log == _payload.leader_log
+                            leader_snapshot == _payload.leader_snapshot
+                            op == [
+                                follower_append |-> [
+                                    node_id |-> _node_id,
+                                    leader_log |-> leader_log,
+                                    leader_snapshot |-> leader_snapshot,
+                                    follower_log |-> result.log,
+                                    follower_snapshot |-> v_snapshot[_node_id]
+                                ]
+                            ]
+                            IN v_history' = AppendHistory(v_history, op, CHECK_SAFETY)
                     )
-                /\ UNCHANGED <<r_voted_for, r_state>>
+                    ELSE 
+                        UNCHANGED <<v_history>>
+                    )
+                /\ UNCHANGED <<v_current_term, v_state, v_voted_for, v_snapshot>>
+            )
+            [] OTHER  -> (
+                FALSE
             )
         )
-    /\ UNCHANGED <<
-            r_match_index, 
-            r_next_index, 
-            r_current_term, 
-            r_acked_value
-        >> 
+        /\ UNCHANGED <<v_acked_value, v_next_index, v_match_index>>
 
-           
-\* NODE_ID i receives an AppendEntries response from server j with
-\* m.term = r_commit_index[i].
-__HandleAppendResponse(i, j, m, _node_ids, _value_set) ==
-    /\ m.term = r_current_term[i]
-    /\ CASE m.append_success ->
-         (  /\ m.append_success \* successful
-            /\ r_next_index'  = [r_next_index  EXCEPT ![i][j] = m.match_index + 1]
-            /\ (LET new_match_index == [r_match_index EXCEPT ![i][j] = m.match_index]
-                  IN /\ r_match_index' = new_match_index
-                     /\ __LeaderAdvanceCommitIndex(_node_ids, i, new_match_index, _value_set))
-                 
-              )
-      [] OTHER -> \* not successful
-          ( /\ r_next_index' = [r_next_index EXCEPT ![i][j] =
-                               Max({r_next_index[i][j] - 1, 1})]
-            /\ UNCHANGED <<
-                    r_match_index, 
-                    r_commit_index, 
-                    r_acked_value,
-                    r_imdt_committed
-               >>
-          )
-    /\ UNCHANGED <<r_state, r_current_term, r_log, r_voted_for>>
+Agree(_match_index, _index, _node_id, _ids) ==
+    {_node_id} \cup {j \in _ids :  
+        /\ j /= _node_id
+        /\ _match_index[_node_id][j] >= _index
+        } \in QuorumOf(_ids)
 
-__HandleNope == 
-    UNCHANGED <<r_vars, r_vars_snapshot, r_vars_helper, ChannelSend>>
+
+AgreeIndex(_match_index, _node_id, _ids) ==
+    IF Len(v_log[_node_id]) = 0 THEN 
+        {}
+    ELSE
+        LET index_set == {v_log[_node_id][j].index: j \in DOMAIN  v_log[_node_id]}
+        IN {i \in index_set : Agree(_match_index, i, _node_id, _ids) }
     
-HandleAppendRequest(msg) ==
-    /\ msg.msg_type = AppendRequest
-    /\ ClearRecvMessage(msg)
-    /\ (\/ __HandleAppendRequest(msg.dest, msg.source, msg)
-        \/ ( /\ __HandleNope 
-             /\ UNCHANGED <<r_history, 
-                    r_vars_snapshot>>))
-    /\ NewAction(__action__, msg.dest, msg.dest, "HandleAppendRequest", ActionInternal, msg, ENABLE_ACTION)
-    /\ UNCHANGED <<r_imdt_committed,
-            r_vars_config
-        >>
-
-HandleAppendResponse(msg,  _value_set) ==
-    LET node_ids == VoteNodeIds(
-                        r_config,
-                        msg.dest)
-    IN                    
-    /\ msg.msg_type = AppendResponse
-    /\ ClearRecvMessage(msg)    
-    /\ ( \/ __HandleAppendResponse(msg.dest, msg.source, msg, node_ids, _value_set)
-         \/ __HandleNope /\ UNCHANGED <<r_imdt_committed>> )
-    /\ NewAction(__action__, msg.dest, msg.dest, "HandleAppendResponse", ActionInternal, msg, ENABLE_ACTION)
-    /\ UNCHANGED <<ChannelSend, r_history,
-            r_vars_config,
-            r_vars_snapshot
-        >>
-
-LogCompaction(i) ==
-    LET first_cmd == FirstCommandOf(r_log[i], COMPACTION_VALUE)
-    IN  /\ first_cmd # {}
-        /\ LET index_and_value == CHOOSE x \in  first_cmd: TRUE
-             compact_last_index == index_and_value.index
-             compact_last_term == r_log[i][compact_last_index].term
-           IN   /\ r_commit_index[i] >= compact_last_index
-                /\ r_snapshot' = [r_snapshot EXCEPT ![i] = [index |-> compact_last_index, term |-> compact_last_term]]
-                /\ r_log' = [r_log EXCEPT ![i] = SubSeq(r_log[i], compact_last_index + 1, Len(r_log[i]))]
-                /\ NewAction(
-                        __action__, i, i, 
-                        "LogCompaction", 
-                        ActionInternal,
-                        [
-                            index |-> compact_last_index,
-                            term |-> compact_last_term
-                        ], 
-                        ENABLE_ACTION)
-                /\ UNCHANGED <<
-                    VarsChannel,
-                        r_state,
-                        r_current_term,
-                        r_commit_index,
-                        r_next_index,
-                        r_match_index,
-                        r_acked_value,
-                        r_voted_for,
-                        r_vars_helper,
-                        r_vars_config
-                    >>
-
-
-HandleApplySnapshot(m) ==
-    /\ m.msg_type = ApplySnapshot
-    /\ ClearRecvMessage(m)
-    /\ NewAction(
-        __action__, m.dest, m.dest, 
-        "HandleApplySnapShot", 
-        ActionInternal,
-        [
-            snapshot |->
-            [
-                snapshot_index |-> m.snapshot_index,
-                snapshot_term |-> m.snapshot_term,
-                snapshot_value |-> {}
-            ]
-        ], 
-        ENABLE_ACTION)
-    /\ \/ __HandleNope
-       \/ ( LET i == m.dest
-            IN
-                /\ r_state[i] = Follower
-                /\ m.term = r_current_term[i]
-                /\ r_snapshot[i].index + Len(r_log[i]) <= m.snapshot_index
-                /\ LET new_snapshot == [index|->m.snapshot_index, term |->m.snapshot_term ]
-                   IN /\ r_snapshot[i] # new_snapshot
-                      /\ r_snapshot' = [r_snapshot EXCEPT ![i] = new_snapshot]
-                /\ r_log' = [r_log EXCEPT ![i] = <<>>]
-                /\ r_commit_index' = [r_commit_index EXCEPT ![i] = m.snapshot_index]
-                /\ UNCHANGED <<
-                    r_state,
-                    r_current_term,
-                    r_next_index,
-                    r_match_index,
-                    r_acked_value,
-                    r_voted_for,
-                    r_vars_helper
-                    >>       
-            )
-      /\ UNCHANGED <<ChannelSend, r_vars_config>>
-                                
-ReplicateRecvMessage(m) ==
-    /\ m.msg_type \in {AppendRequest, AppendResponse, ApplySnapshot}
-    /\ RecvMessage(m) 
-    /\ NewAction(__action__, m.source, m.dest, "ReplicateRecvMessage", ActionInput, m, ENABLE_ACTION)
-    /\ UNCHANGED <<r_vars, ChannelSend, r_history, r_imdt_committed,
-            r_vars_config,
-            r_vars_snapshot
-        >>
-
-\* Network v_state transitions
-ReplicateUpdateTerm(msg) ==
-    /\ msg.msg_type \in {AppendRequest, AppendResponse, ApplySnapshot}
-    /\ "term" \in DOMAIN msg
-    /\  LET  term == msg.term
-             i == msg.dest
-        IN
-        /\ r_current_term[i] < term
-        /\ r_current_term' = [r_current_term EXCEPT ![i] = term]
-        /\ r_state' = [r_state EXCEPT ![i] = Follower]
-        /\ r_voted_for' = [r_voted_for EXCEPT ![i] = {}]
-        /\ NewAction(__action__, i, i, "ReplicateUpdateTerm", ActionInternal, [term |-> term], ENABLE_ACTION)
-        /\ UNCHANGED <<
-                ChannelSend, 
-                ChannelRecv,
-                r_log,
-                r_commit_index,
-                r_next_index,
-                r_match_index,
-                r_acked_value,
-                r_history,
-                r_imdt_committed,
-                r_vars_config,
-                r_vars_snapshot
-            >>
-
-
-ReplicateRestart(i) ==
-    LET node_ids == VoteNodeIds(
-                        r_config,
-                        i)
-    IN
-    /\ r_state' = [r_state EXCEPT ![i] = Follower]
-    /\ r_next_index' = [r_next_index EXCEPT ![i] = [j \in node_ids |-> 1]]
-    /\ r_match_index' = [r_match_index EXCEPT ![i] = [j \in node_ids |-> 0]]
-    /\ LET  old == [state |-> r_state]
-            new == [state |-> r_state']
-            actions == ActionFromChangedVars(
-                old,
-                new,
-                node_ids,
-                "ReplicateRestart", ActionInternal ,
-                ENABLE_ACTION
-            )
-       IN ActionPrime(__action__, actions, ENABLE_ACTION)
-    /\ UNCHANGED <<
-            VarsChannel,
-            r_current_term, 
-            r_log,
-            r_voted_for,
-            r_acked_value,
-            r_commit_index,
-            r_history,
-            r_imdt_committed,
-            r_vars_config,
-            r_vars_snapshot
-       >>
-
+    
+_HandleAdvanceCommitIndex(_match_index, _node_id) ==
+    LET agree_indexes == AgreeIndex(_match_index, _node_id, NODE_ID)
+    IN IF agree_indexes /= {} THEN
+        LET max_index == Max(agree_indexes)
+        IN (IF max_index > v_commit_index[_node_id] THEN 
+                v_commit_index' = [v_commit_index EXCEPT ![_node_id] = max_index]
+            ELSE 
+                UNCHANGED <<v_commit_index>>
+           )
+       ELSE
+           UNCHANGED <<v_commit_index>> 
         
-\* TODO, refinement is violated!
-\* RefinementR == MappingAR!SpecAR
+_HandleAppendLogResponse(_node_id, _source, _payload) ==
+    IF /\ v_state[_node_id] = Leader
+       /\ _payload.term = v_current_term[_node_id]
+    THEN (
+        /\ (\/ (/\ _payload.append_success
+                /\ v_next_index'  = [v_next_index  EXCEPT ![_node_id][_source] = _payload.match_index + 1]
+                /\ v_match_index' = [v_match_index EXCEPT ![_node_id][_source] = _payload.match_index]
+                /\ _HandleAdvanceCommitIndex(v_match_index', _node_id)
+               )
+            \/ (/\ \lnot _payload.append_success
+                /\ v_next_index'  = [v_next_index  EXCEPT ![_node_id][_source] = Max({v_next_index[_node_id][_source] - 1, 1})]
+                /\ UNCHANGED <<v_commit_index, v_match_index>>
+               )
+            )
+        /\ UNCHANGED <<v_log, v_voted_for, v_current_term, v_acked_value,
+                        v_messages, v_snapshot, v_state, v_history>>
+         )
+     ELSE UNCHANGED <<vars_except_action_and_pc>>
 
-FollowerAppendLogOK ==
-    InvariantFollowerAppend(r_history, ENABLE_CHECK_INVARIANTS)
 
-TermOK ==
-    \A i \in NODE_ID:
-        InvariantTerm(r_current_term, r_log, r_snapshot, i)
+    
+
+_UpdateTerm(_node_id, _term) ==
+    /\ IF _term > v_current_term[_node_id] THEN
+           (/\ v_current_term'    = [v_current_term EXCEPT ![_node_id] = _term]
+            /\ v_state'          = [v_state       EXCEPT ![_node_id] = Follower]
+            /\ v_voted_for'       = [v_voted_for    EXCEPT ![_node_id] = INVALID_NODE_ID]
+           )
+       ELSE
+            UNCHANGED <<v_current_term, v_state, v_voted_for>>
+    /\ UNCHANGED<<v_match_index, v_next_index, v_commit_index, 
+            v_acked_value,
+            v_log, 
+            v_snapshot,
+            v_messages,
+            v_history
+        >>
+       
+RecvMessage(node_id) ==
+    /\ v_pc[node_id].state = "next" 
+    /\ \E m \in v_messages:
+        /\ m.dest = node_id
+        /\  LET action_id == IdOfAction(__action__)
+                source == m.source
+                dest == m.dest
+                payload == m.payload
+                name == m.name
+                actions0 == ActionSeqSetupAll
+                actions1 == ActionCheckState(dest)
+                actions2 == Action(ActionInput, m)
+            IN \/ (/\ name \in  {AppendRequest, ApplyReq}
+                   /\ IF name = AppendRequest THEN
+                        v_pc' = [v_pc EXCEPT ![dest] = [ state |-> "app_req1"]]
+                      ELSE
+                        v_pc' = [v_pc EXCEPT ![dest] = [ state |-> "apl_req1"]]
+                   /\ v_pc_context' = [v_pc_context EXCEPT ![dest] = [message |-> m, id |-> action_id]]
+                   /\ SetAction(__action__,actions0, actions1 \o actions2)
+                   /\  UNCHANGED <<v_state,
+                                v_current_term,
+                                v_log, 
+                                v_voted_for,
+                                v_snapshot,
+                                v_commit_index,
+                                v_next_index,
+                                v_match_index,
+                                v_messages,
+                                v_history,
+                                v_acked_value
+                                >>
+                   )
+               \/ (/\ name =  AppendResponse
+                   /\ v_pc' = [v_pc EXCEPT ![dest] = [ state |-> "app_resp1"]]
+                   /\ v_pc_context' = [v_pc_context EXCEPT ![dest] = [message |-> m, id |-> action_id]]
+                   /\ SetAction(__action__, actions0, actions1 \o actions2)
+                   /\  UNCHANGED <<v_state,
+                                v_current_term,
+                                v_log, 
+                                v_voted_for,
+                                v_snapshot,
+                                v_commit_index,
+                                v_next_index,
+                                v_match_index,
+                                v_messages,
+                                v_history,
+                                v_acked_value
+                                >>
+                  )
+               \/ (/\ name =  ApplyResp
+                   /\ SetAction(__action__, actions0, actions1 \o actions2)
+                   /\  UNCHANGED <<
+                                v_pc,
+                                v_pc_context,
+                                v_state,
+                                v_current_term,
+                                v_log, 
+                                v_voted_for,
+                                v_snapshot,
+                                v_commit_index,
+                                v_next_index,
+                                v_match_index,
+                                v_messages,
+                                v_history,
+                                v_acked_value
+                                >>
+                  )
+                  
+
+UpdateTerm(node_id) ==
+    /\ v_pc[node_id].state \in {"app_req1",  "app_resp1", "apl_req1"}
+    /\ ContextHasMessage(v_pc_context[node_id])
+    /\ PrevIdOfAction(__action__) = v_pc_context[node_id].id
+    /\ LET message ==  v_pc_context[node_id].message
+            payload == message.payload
+            actions0 == ActionSeqSetupAll
+            action_id == IdOfAction(__action__)
+        IN
+         /\ _UpdateTerm(node_id, payload.term)
+         /\ (\/ (/\ v_pc[node_id].state = "app_req1"
+                /\ v_pc' = [v_pc EXCEPT ![node_id] = [v_pc[node_id] EXCEPT !.state = "app_req2"]]
+                )
+             \/ (/\ v_pc[node_id].state = "app_resp1"
+                /\ v_pc' = [v_pc EXCEPT ![node_id] = [v_pc[node_id] EXCEPT !.state = "app_resp2"]]
+                )
+             \/ (/\ v_pc[node_id].state = "apl_req1"
+                /\ v_pc' = [v_pc EXCEPT ![node_id] = [v_pc[node_id] EXCEPT !.state = "apl_req2"]]
+                )
+             )
+         /\ v_pc_context' = [v_pc_context EXCEPT ![node_id].id =  action_id]
+         /\ SetAction(__action__, actions0, Action(ActionInternal, Message(node_id, node_id, __ActionHandleUpdateTerm, payload.term)))
+    
+
+HandleAppendLogReq(_node_id) ==
+    /\ v_pc[_node_id].state = "app_req2" 
+    /\ ContextHasMessage(v_pc_context[_node_id])
+    /\ PrevIdOfAction(__action__) = v_pc_context[_node_id].id
+    /\ LET message == v_pc_context[_node_id].message 
+           from_node_id == message.source
+           payload == message.payload
+           actions0 == ActionSeqSetupAll
+       IN /\ message.name = AppendRequest
+          /\ _HandleAppendLog(_node_id, from_node_id, payload, actions0) 
+          /\ v_pc' = [v_pc EXCEPT ![_node_id] = [ state |-> "next"]]
+          /\ v_pc_context' = [v_pc_context EXCEPT ![_node_id] = ContextNull]
+
+
+HandleApplySnapshotReq(_node_id) ==
+    /\ v_pc[_node_id].state = "apl_req2" 
+    /\ ContextHasMessage(v_pc_context[_node_id])
+    /\ PrevIdOfAction(__action__) = v_pc_context[_node_id].id
+    /\ LET message == v_pc_context[_node_id].message 
+           from_node_id == message.source
+           payload == message.payload
+           actions0 == ActionSeqSetupAll
+       IN (/\ message.name = ApplyReq
+           /\ v_pc' = [v_pc EXCEPT ![_node_id] = [ state |-> "next"]]
+           /\ v_pc_context' = [v_pc_context EXCEPT ![_node_id] = ContextNull]
+           /\ v_snapshot' = [v_snapshot EXCEPT ![_node_id] = payload.snapshot]
+           /\ LET resp_payload ==  [source_nid |-> _node_id, term |-> v_current_term[_node_id], id |-> payload.id, iter |-> <<>>]
+                  resp == Message(_node_id, from_node_id, ApplyResp, resp_payload)  
+                  action2 == Action(ActionOutput, resp)
+                  action1 == Action(ActionInternal, Message(_node_id, _node_id, __ActionHandleApplySnapshotRequest, payload))
+              IN SetAction(__action__, actions0, action1 \o action2)
+           /\ UNCHANGED <<
+                        v_state,
+                        v_current_term,
+                        v_log, 
+                        v_voted_for,
+                        v_commit_index,
+                        v_next_index,
+                        v_match_index,
+                        v_messages,
+                        v_history,
+                        v_acked_value
+                        >>
+           )
+          
+HandleAppendLogResp(_node_id) ==
+    /\ v_pc[_node_id].state = "app_resp2" 
+    /\ ContextHasMessage(v_pc_context[_node_id])
+    /\ LET message == v_pc_context[_node_id].message 
+           from_node_id == message.source
+           payload == message.payload
+           actions0 == ActionSeqSetupAll
+           action1 == Action(ActionInternal, Message(_node_id, _node_id, __ActionHandleAppendLogResponse, payload))       
+       IN /\ _HandleAppendLogResponse(_node_id, from_node_id, payload) 
+          /\ SetAction(__action__, actions0, action1)
+          /\ v_pc' = [v_pc EXCEPT ![_node_id] = [ state |-> "next"]]
+          /\ v_pc_context' = [v_pc_context EXCEPT ![_node_id] = ContextNull]
+            
+Next == 
+    \/ \E i \in NODE_ID : 
+        /\ RecvMessage(i)
+        /\ SaveActions
+    \/ \E i \in NODE_ID : 
+        /\ AppendLogEntries(i)
+        /\ SaveActions
+    \/ \E i \in NODE_ID : 
+        /\ HandleAppendLogReq(i)
+        /\ SaveActions
+    \/ \E i \in NODE_ID : 
+        /\ HandleAppendLogResp(i)
+        /\ SaveActions
+    \/ \E i \in NODE_ID : 
+        /\ HandleApplySnapshotReq(i)
+        /\ SaveActions
+    \/ \E i \in NODE_ID : 
+        /\ UpdateTerm(i)
+        /\ SaveActions
+\* to Next.
+Spec == 
+    /\ Init 
+    /\ [][Next]_vars
+----
+
+StateOK ==
+    BaseStateOK(
+        v_state,
+        v_current_term,
+        v_log,
+        v_snapshot,
+        v_voted_for,
+        NODE_ID,
+        VALUE,
+        MAX_TERM)
+   
 
 LogTermGrowOK ==
-    \A i \in NODE_ID:
-        InvariantLogTermGrow(r_log, r_snapshot, i)
+    LogTermGrow(v_log, v_snapshot, NODE_ID)
+            
         
-ImmediatelyCommittedOK ==
-   InvariantImmediatelyCommitted(
-        r_imdt_committed,
-        r_history,
-        ENABLE_CHECK_INVARIANTS)
-
-
-CommitIndexOK ==
-    \A i \in NODE_ID:
-        r_commit_index[i] <= Len(r_log[i]) + r_snapshot[i].index
-        
-PrefixCommittedOK ==
+PrefixCommitted ==
     InvariantPrefixCommitted(
-        r_log,
+        v_log,
         MAX_TERM,
         NODE_ID,
-        r_history,
-        ENABLE_CHECK_INVARIANTS)
+        v_history)
         
-NextR ==
-    \/ \E m \in ChannelSend : ReplicateRecvMessage(m)
-    \/ \E m \in ChannelRecv : ReplicateUpdateTerm(m)
-    \/ \E m \in ChannelRecv : HandleAppendResponse(m, INIT_VALUE \cup APPEND_VALUE)
-    \/ \E m \in ChannelRecv : HandleAppendRequest(m)
-    \/ \E m \in ChannelRecv : HandleApplySnapshot(m)
-    \/ \E i \in NODE_ID : LogCompaction(i)
-    \/ \E i \in NODE_ID : ReplicateRestart(i)
-    \/ \E i, j \in NODE_ID : AppendEntries(i)
+AtMostOneLeaderPerTerm ==  
+    InvariantAtMostOneLeaderPerTerm(
+          v_history)
+    
+SnapshotCommit ==    
+    InvariantSnapshotCommit(
+        v_log,
+        v_snapshot,
+        NODE_ID)
+    
+LogPrefixOK ==    
+    InvariantLogPrefix(
+        v_log,
+        v_snapshot,
+        NODE_ID)
+    
+FollowerAppend ==    
+    InvariantFollowerAppend(
+        v_history)
+        
+LogStateOK == 
+    LogOK( 
+        v_current_term,
+        v_log,
+        v_snapshot,
+        NODE_ID,
+        VALUE,
+        MAX_TERM)
 
+Invariant ==
+    /\ StateOK
+    /\ LogTermGrowOK
+    /\ LogStateOK
+    /\ PrefixCommitted
+    /\ AtMostOneLeaderPerTerm
+    /\ SnapshotCommit
+    /\ LogPrefixOK
+    /\ FollowerAppend
 
-SpecR == 
-    /\ InitR 
-    /\ [][NextR]_VarsR
 
 ===============================================================================
 

@@ -1,5 +1,5 @@
 ------------------------------ MODULE raft_replicate_common ------------------------------
-EXTENDS  raft_common, Naturals, FiniteSets, Sequences, TLC
+EXTENDS  raft_common, history, Naturals, FiniteSets, Sequences, TLC
 
 \*
 \*
@@ -56,15 +56,13 @@ LogPrevEntryOK(
         /\ _snapshot[_node_id].index = 0
         /\ Len(_log[_node_id]) = 0
         )
-    \/ (/\ _prev_log_index > 0
-        /\  IF _snapshot[_node_id].index >= _prev_log_index THEN
-                /\ _snapshot[_node_id].term = _prev_log_term
-                /\ _snapshot[_node_id].index = _prev_log_index
-            ELSE
-                LET _i == _prev_log_index - _snapshot[_node_id].index
-                IN \* i > 0
-                    /\ _i <= Len(_log[_node_id])
-                    /\ _prev_log_term = _log[_node_id][_i].term 
+    \/ (IF _snapshot[_node_id].index >= _prev_log_index THEN
+             TRUE
+        ELSE
+            LET _i == _prev_log_index - _snapshot[_node_id].index
+            IN \* assert i  > 0
+                /\ _i <= Len(_log[_node_id])
+                /\ _prev_log_term = _log[_node_id][_i].term 
        )
 
 RejectAppendLog(
@@ -272,8 +270,11 @@ LogAfterAppendEntries(
                         TruncateEntries(_to_append_entries, _vi_reconfig)
                     ELSE <<>>
         reconfig_vi == ValueIndexLessLimit(_vi_reconfig, Len(_entries))
-        _original == 1..Len(_log[_node_id])
-        _new == IF Len(_entries) = 0 THEN
+        _log_node== IF Len(_log[_node_id]) > 0 THEN 
+                        SubSeq(_log[_node_id], 1, Min({_index + Len(_entries), Len(_log[_node_id])})) 
+                    ELSE <<>>
+        _log_index == 1..Len(_log_node)
+        _log_index_to_update == IF Len(_entries) = 0 THEN
                     {}
                 ELSE
                     \* Len(_entries) must >= 1
@@ -281,28 +282,115 @@ LogAfterAppendEntries(
                     _index + 1 .. _index + Len(_entries)
        __dump == [
                 entries |-> _entries,
-                new |-> _new,
-                original |-> _original,
+                new |-> _log_index_to_update,
+                original |-> _log_index,
                 node_id |-> _node_id,
                 index |-> _index
             ]
     IN      [   
                 prev_match_index |-> _index,
                 match_index |->  _index + Len(_entries),
-                log |-> [
-                        i \in _original \cup _new |-> 
-                            IF i \in _new THEN
-                                IF i - _index \notin DOMAIN _entries THEN
-                                    __dump.non_exist1
-                                ELSE 
-                                   _entries[i - _index]
-                            ELSE
-                                IF i  \notin DOMAIN _log[_node_id] THEN
-                                    __dump.non_exist2
-                                ELSE  
-                                    _log[_node_id][i]
-                ],
+                log |-> (IF  _log_index \cup _log_index_to_update = {} THEN 
+                            <<>>
+                        ELSE
+                            [
+                                    i \in _log_index \cup _log_index_to_update |-> 
+                                        IF i \in _log_index_to_update THEN
+                                            IF i - _index \notin DOMAIN _entries THEN
+                                                __dump.non_exist1
+                                            ELSE 
+                                               _entries[i - _index]
+                                        ELSE
+                                            IF i  \notin _log_index THEN
+                                                __dump.non_exist2
+                                            ELSE  
+                                                _log_node[i]
+                            ]),
                 reconfig |-> reconfig_vi
            ]
+
+APPEND_RESULT_REJECT == "reject_append"
+APPEND_RESULT_TO_FOLLOWER == "to_follower"
+APPEND_RESULT_ACCEPT == "accept_append"
+APPEND_RESULT_STALE_INDEX == "stale_index" 
+
+HandleAcceptAppend(
+    dst, 
+    src, 
+    prev_log_index, 
+    term, 
+    log_entries,
+    _v_log,
+    _v_snapshot,
+    _v_history,
+    _reconfig_value_set
+) ==
+    CASE _v_snapshot[dst].index > prev_log_index -> (
+             [ append_result |-> APPEND_RESULT_STALE_INDEX ]
+        ) 
+    []OTHER -> (
+        \* foreach log entry in log_entries seqneuce
+           LET  _entries == log_entries
+                snapshot_last_index == _v_snapshot[dst].index
+                snapshot_last_term == _v_snapshot[dst].term
+                prev_i == prev_log_index  - snapshot_last_index
+                l == LogAfterAppendEntries(
+                            _v_log, 
+                            dst, 
+                            _entries, 
+                            prev_i, 
+                            _reconfig_value_set)
+                match_index == l.match_index + snapshot_last_index
+            IN [
+                    append_result |-> APPEND_RESULT_ACCEPT,
+                    log |-> l.log,
+                    match_index |-> l.match_index + snapshot_last_index
+               ] 
+    )
+
  
+HandleAppendLogInner(
+    _v_log,
+    _v_snapshot,
+    _v_current_term,
+    _v_state,
+    _v_history,
+    _reconfig_value_set,
+    _node_id,
+    _leader_node_id,
+    _prev_log_index,
+    _prev_log_term,
+    _term,
+    _log_entries
+    ) ==
+    LET log_ok == LogPrevEntryOK(
+                    _v_log,
+                    _v_snapshot,
+                    _node_id,
+                    _prev_log_index,
+                    _prev_log_term)
+    IN \* reject request
+         CASE RejectAppendLog(_v_current_term, _v_state, _node_id, _term, log_ok) ->
+              [
+                append_result |-> APPEND_RESULT_REJECT
+              ]
+         
+         \* to follower state
+         [] CandidateBecomeFollower(_v_current_term, _v_state, _node_id, _term) ->
+              [
+                append_result |-> APPEND_RESULT_TO_FOLLOWER
+              ]
+         \* OK, append the log
+         [] FollowerAcceptAppendLog(_v_current_term, _v_state, _node_id, _term, log_ok) ->
+              HandleAcceptAppend(
+                    _node_id, _leader_node_id, _prev_log_index, _term, _log_entries, 
+                    _v_log, _v_snapshot, _v_history, _reconfig_value_set
+                )
+         [] OTHER -> (
+              [
+                append_result  |-> "other"
+              ]
+         )
+
+
 =============================================================================

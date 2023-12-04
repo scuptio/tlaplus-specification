@@ -6,7 +6,8 @@ EXTENDS message, UUID, StateDB, Sequences, FiniteSets, Naturals
 ActionInternal  ==  "T"
 ActionInput     ==  "I"
 ActionOutput    ==  "O"
-
+ActionSetup     ==  "S"
+ActionCheck     ==  "C"
 
 IsInjective(f) == \A a,b \in DOMAIN f : f[a] = f[b] => a = b
 
@@ -22,7 +23,7 @@ Action(
     _payload
 ) == 
     <<[
-            t |-> _action_type, 
+            t |-> _action_type,
             p |-> _payload
     ]>>
 
@@ -37,6 +38,8 @@ Actions(
     ]
     IN SetToSeq(_action_set)
 
+
+    
 CheckAction(_action, _node_id) ==
     \A i \in DOMAIN _action:
         /\ _action[i].t \in {ActionInternal, ActionInput, ActionOutput}
@@ -128,25 +131,88 @@ ActionsFromHandle(
         _node_ids,
         _action_type,
         _action_name)
-            
+
+
+RECURSIVE __ActionSeqOfEachNodeHandleEx(_, _, _, _, _)
+
+__ActionSeqOfEachNodeHandleEx(
+    _handle_node_id(_, _),
+    _node_ids,
+    _action_type,
+    _action_name,
+    _context
+) ==
+    IF _node_ids = {} THEN
+        <<>>
+    ELSE 
+        LET id == CHOOSE x \in _node_ids : TRUE
+            payload == _handle_node_id(id, _context)
+            msg == Message(id, id, _action_name, payload)
+            action == Action(_action_type, msg)
+        IN __ActionSeqOfEachNodeHandleEx(
+                _handle_node_id,
+                _node_ids \ {id}, 
+                _action_type, 
+                _action_name,
+                _context
+                ) \o action
+
+ActionsFromHandleContext(
+    _handle_node_id(_, _),
+    _node_ids,
+    _action_type,
+    _action_name,
+    _context
+) ==
+    __ActionSeqOfEachNodeHandleEx(
+        _handle_node_id,
+        _node_ids,
+        _action_type,
+        _action_name,
+        _context
+      )
+        
+PrevIdOfAction(
+    _action
+) ==
+    _action.p
+    
+IdOfAction(
+    _action
+) ==
+    _action.i
+
+
+
+ContinuousAction(
+    _action, 
+    _pc) == 
+    /\ "id" \in DOMAIN _pc
+    /\ _pc.id = PrevIdOfAction(_action)
+    
+        
 SetAction(
     _action_variable,
-    _action_sequence
+    _action_sequence1,
+    _action_sequence2
 ) ==
     _action_variable' = [
         p |-> _action_variable.i,
         i |-> UUID,
-        a |-> _action_sequence 
+        s |-> _action_sequence1,
+        a |-> _action_sequence2 
     ]
 
 InitAction(
     _action_variable,
-    _action_sequence
+    _action_sequence1,
+    _action_sequence2
 ) ==
     _action_variable = [
         p |-> "",
         i |-> UUID,
-        a |-> _action_sequence 
+        s |-> _action_sequence1,
+        a |-> _action_sequence2 
     ]
 
     

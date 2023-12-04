@@ -12,6 +12,16 @@ Message(
         payload |-> _payload
     ]
 
+MessageNP(
+    _from,
+    _to,
+    _message_name
+    ) ==
+    [
+        source |-> _from,
+        dest |-> _to,
+        name |-> _message_name
+    ]
         
 MessageLocal(
     _local_nid,
@@ -20,6 +30,11 @@ MessageLocal(
     Message(_local_nid, _local_nid, _message_name, _payload)
 
 
+MessageLocalNP(
+    _local_nid,
+    _message_name) ==
+    MessageNP(_local_nid, _local_nid, _message_name)
+    
 
 MessageSet(
     _from_set,
