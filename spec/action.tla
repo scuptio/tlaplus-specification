@@ -1,6 +1,6 @@
 --------------------------------- MODULE action ---------------------------------
 
-EXTENDS message, UUID, StateDB, Sequences, FiniteSets, Naturals
+EXTENDS message, GenID, StateDB, Sequences, FiniteSets, Naturals
 
 
 ActionInternal  ==  "T"
@@ -189,33 +189,78 @@ ContinuousAction(
     _pc) == 
     /\ "id" \in DOMAIN _pc
     /\ _pc.id = PrevIdOfAction(_action)
-    
-        
+
+
+InitAction(
+    _action_variable,
+    _action_sequence1,
+    _action_sequence2,
+    _enable
+) ==
+    IF _enable THEN
+        _action_variable = [
+            p |-> _action_variable.i,
+            i |-> NextID,
+            s |-> _action_sequence1,
+            a |-> _action_sequence2 
+        ]
+    ELSE
+        _action_variable = [
+            p |-> GetID,
+            i |-> GetID,
+            s |-> <<>>,
+            a |-> <<>> 
+        ]
+
+
 SetAction(
+    _action_variable,
+    _action_sequence1,
+    _action_sequence2,
+    _enable
+) ==
+    IF _enable THEN
+        _action_variable' = [
+            p |-> _action_variable.i,
+            i |-> NextID,
+            s |-> _action_sequence1,
+            a |-> _action_sequence2 
+        ]
+    ELSE
+        _action_variable' = [
+            p |-> GetID,
+            i |-> GetID,
+            s |-> <<>>,
+            a |-> <<>> 
+        ]
+
+    
+InitActionT(
+    _action_variable,
+    _action_sequence1,
+    _action_sequence2
+) ==
+    _action_variable = [
+        p |-> NextID,
+        i |-> NextID,
+        s |-> _action_sequence1,
+        a |-> _action_sequence2 
+    ]
+
+SetActionT(
     _action_variable,
     _action_sequence1,
     _action_sequence2
 ) ==
     _action_variable' = [
         p |-> _action_variable.i,
-        i |-> UUID,
+        i |-> NextID,
         s |-> _action_sequence1,
         a |-> _action_sequence2 
     ]
 
-InitAction(
-    _action_variable,
-    _action_sequence1,
-    _action_sequence2
-) ==
-    _action_variable = [
-        p |-> "",
-        i |-> UUID,
-        s |-> _action_sequence1,
-        a |-> _action_sequence2 
-    ]
 
-    
+                
 InitActionEmpty == {}
 
 ===============================================================================
