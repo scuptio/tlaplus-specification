@@ -216,21 +216,21 @@ _TypeInvariant ==
     /\ \A _n \in NODE_ID:
         (\A _x \in XID:
             ( /\ v_tm_state[_n][_x].state \in TM_STATE
-              /\ v_tm_state[_n][_x].rm_id \in SUBSET(NODE_ID)
+              /\ v_rm_state[_n][_x].rm_id \in SUBSET(NODE_ID)
             )
         )
     /\ \A _n \in NODE_ID:
         (\A _x \in XID:
-            ( \*/\ v_rm_state[_n][_x].state \in RM_STATE
+            ( /\ v_rm_state[_n][_x].state \in RM_STATE
               /\ v_rm_state[_n][_x].rm_id \in SUBSET(NODE_ID)   
             )
         )
-    (*
+ 
     /\ \A _n1 \in NODE_ID:
         \A _x \in XID:
             \A _n2 \in NODE_ID:
                 /\ v_tm_rm_collection[_n1][_x][_n2] \in RM_STATE
-    *)
+
     
 __RMNode(_tm_rm_collection) ==
     {n \in DOMAIN _tm_rm_collection:
@@ -251,35 +251,54 @@ _RMNodeAtState(_tm_rm_collection, _states) ==
             
 
 
-_StateCorrect(_xid, _tm_nid, _rm_nids) ==
-    /\ v_tm_state[_tm_nid][_xid].state = _TM_COMMITTED =>
-       (    \A n \in _rm_nids: 
-                v_rm_state[n][_xid].state = _RM_COMMITTED
+_StateCorrect(
+    _xid, 
+    _tm_nid, 
+    _rm_nids,
+    _tm_state,
+    _rm_state
+) ==
+    /\ _tm_state[_tm_nid][_xid].state = _TM_COMMITTED =>
+       (    LET ok == \A n \in _rm_nids: 
+                        _rm_state[n][_xid].state = _RM_COMMITTED
+            IN /\ ~ok => PrintT(<<"state error, tm committed", _tm_state, _rm_state>>)
+               /\ ok
        ) 
-    /\ (v_tm_state[_tm_nid][_xid].state = _TM_ABORTED =>
-            \A n \in _rm_nids: 
-                v_rm_state[n][_xid].state = _RM_ABORTED
+    /\ (_tm_state[_tm_nid][_xid].state = _TM_ABORTED =>
+            LET ok == \A n \in _rm_nids: 
+                        _rm_state[n][_xid].state = _RM_ABORTED
+            IN /\ ~ok => PrintT(<<"state error, tm aborted", _tm_state, _rm_state>>)
+               /\ ok
         )
-   /\ (v_tm_state[_tm_nid][_xid].state = _TM_COMMITTING =>
-        /\ \A n \in _rm_nids: 
-                v_rm_state[n][_xid].state \in {_RM_COMMITTED, _RM_PREPARED}
+   /\ (_tm_state[_tm_nid][_xid].state = _TM_COMMITTING =>
+            LET ok == /\ \A n \in _rm_nids: 
+                            _rm_state[n][_xid].state \in {_RM_COMMITTED, _RM_PREPARED}
+            IN /\ ~ok => PrintT(<<"state error, tm committing", _tm_state, _rm_state>>)
+               /\ ok
         )
-   /\ (v_tm_state[_tm_nid][_xid].state = _TM_ABORTING =>
-        /\ ~(\E n \in _rm_nids: 
-                v_rm_state[n][_xid].state = _RM_COMMITTED)
+   /\ (_tm_state[_tm_nid][_xid].state = _TM_ABORTING =>
+            LET ok == ~(\E n \in _rm_nids: 
+                        _rm_state[n][_xid].state = _RM_COMMITTED)
+            IN /\ ~ok => PrintT(<<"state error, tm aborting", _tm_state, _rm_state>>)
+               /\ ok
         )
-   /\ (v_tm_state[_tm_nid][_xid].state = _TM_PREPARING =>
-        /\ \A n \in _rm_nids: 
-                v_rm_state[n][_xid].state \in {_RM_PREPARED, _RM_RUNNING, _RM_ABORTED}
+   /\ (_tm_state[_tm_nid][_xid].state = _TM_PREPARING =>
+            LET ok == \A n \in _rm_nids: 
+                        _rm_state[n][_xid].state \in {_RM_PREPARED, _RM_RUNNING, _RM_ABORTED}
+            IN /\ ~ok => PrintT(<<"state error, tm preparing", _tm_state, _rm_state>>)
+               /\ ok        
       )
    /\ \A _tm \in NODE_ID \ {_tm_nid}, _rm \in NODE_ID \ _rm_nids:  
-        /\ v_tm_state[_tm][_xid].state = _TM_INVALID
-        /\ v_rm_state[_rm][_xid].state = _RM_INVALID
+        LET ok == (/\ _tm_state[_tm][_xid].state = _TM_INVALID
+                   /\ _rm_state[_rm][_xid].state = _RM_INVALID)
+        IN /\ ~ok => PrintT(<<"state error, all invalid", _tm_state, _rm_state>>)
+           /\ ok  
 
 _ValidState(_tm_state, _rm_state, _tm_rm_collection) ==
     \A x \in XID, tm_n \in NODE_ID:
-        LET rm_n_ids == __RMNode(_tm_rm_collection[tm_n][x])
-        IN Cardinality(rm_n_ids) > 0 => _StateCorrect(x, tm_n, rm_n_ids)
+        LET rm_n_ids == _tm_state[tm_n][x].rm_id
+        IN Cardinality(rm_n_ids) > 0 
+            => _StateCorrect(x, tm_n, rm_n_ids, _tm_state, _rm_state)
 
 _TranStateInvariant == 
     _ValidState(v_tm_state, v_rm_state, v_tm_rm_collection)
@@ -690,7 +709,7 @@ RMReceiveAbort(n, x, m) ==
 
 Restart(n) ==
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ v_rm_state' = [v_tm_state EXCEPT ![n] =
+    /\ v_rm_state' = [v_rm_state EXCEPT ![n] =
             [
                 x \in DOMAIN v_rm_state[n] |-> 
                    (IF v_rm_state[n][x].state = _RM_RUNNING THEN
