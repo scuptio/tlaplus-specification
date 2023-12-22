@@ -1,6 +1,9 @@
 ------------------------------ MODULE raft_replicate_common ------------------------------
 EXTENDS  raft_common, history, Naturals, FiniteSets, Sequences, TLC
 
+
+
+
 \*
 \*
 \* used by (Abstract) Replicate
@@ -47,59 +50,57 @@ LogEntries(
 
 LogPrevEntryOK(
     _log, 
-    _snapshot,
-    _node_id, 
+    _snapshot, 
     _prev_log_index, 
     _prev_log_term
 ) ==
     \/ (/\ _prev_log_index = 0 
-        /\ _snapshot[_node_id].index = 0
-        /\ Len(_log[_node_id]) = 0
+        /\ _snapshot.index = 0
+        /\ Len(_log) = 0
         )
-    \/ (IF _snapshot[_node_id].index >= _prev_log_index THEN
-             TRUE
+    \/ (IF _snapshot.index >= _prev_log_index THEN
+            (/\ _snapshot.index = _prev_log_index
+             /\ _snapshot.term = _prev_log_term)
+           
         ELSE
-            LET _i == _prev_log_index - _snapshot[_node_id].index
+            LET _i == _prev_log_index - _snapshot.index
             IN \* assert i  > 0
-                /\ _i <= Len(_log[_node_id])
-                /\ _prev_log_term = _log[_node_id][_i].term 
+                /\ _i <= Len(_log)
+                /\ _prev_log_term = _log[_i].term 
        )
 
 RejectAppendLog(
     _current_term,
     _state,
-    _node_id, 
     _term, 
     _log_ok
 ) ==
-    \/ _current_term[_node_id] > _term
-    \/(/\ _current_term[_node_id] = _term
-       /\ _state[_node_id] = Follower
+    \/ _current_term > _term
+    \/(/\ _current_term = _term
+       /\ _state = Follower
        /\ \lnot _log_ok)
 
-CandidateBecomeFollower(_current_term, _state, _node_id, _term) ==
-    /\ _current_term[_node_id] = _term
-    /\ _state[_node_id] = Candidate
+CandidateBecomeFollower(_current_term, _state,  _term) ==
+    /\ _current_term = _term
+    /\ _state = Candidate
 
 FollowerAcceptAppendLog(
     _current_term, 
     _state,
-    _node_id,
     _term,
     _log_ok
 ) ==
-    /\ _current_term[_node_id] = _term
-    /\ _state[_node_id] = Follower
+    /\ _current_term = _term
+    /\ _state = Follower
     /\ _log_ok
 
 LogEntryTermInconsistency(
     _log,
-    _node_id,
     _log_entry, 
     _index
 ) ==
-   /\ Len(_log[_node_id]) >= _index
-   /\ _log[_node_id][_index].term # _log_entry.term
+   /\ Len(_log) >= _index
+   /\ _log[_index].term # _log_entry.term
            
 LogEntryExist(
     _log,
@@ -117,56 +118,93 @@ LogEntryCanAppend(
 ) ==
     /\ Len(_log[_node_id]) + 1 = _index
 
+        
 
+(*
+    return record 
+    [
+        prev_index ->
+        log_entries -> 
+        seq_index_to_write -> index of log sequence started to write(stated from 1)
+    ]
+*)
 _LogEntryTruncateOrAppend(
     _log,
-    _node_id,
     _log_entries, 
-    _log_offset_start
+    _prev_index,
+    _snapshot_last_index
 ) ==
-    LET _index == Min({Len(_log[_node_id]) - _log_offset_start, Len(_log_entries)})
-        _inconsistency_index == {
-            i \in 1.._index:
-                LogEntryTermInconsistency(_log, _node_id, _log_entries[i], _log_offset_start + i)
+
+    LET 
+        _log_entries_skipped == _prev_index - _snapshot_last_index
+        _inconsistency_index_of_log_entries == {
+            i \in 1..Len(_log_entries):
+                /\ i + _log_entries_skipped <= Len(_log)
+                /\ _log_entries[i].term # _log[i + _log_entries_skipped].term
             }
     IN
-        CASE _index = 0 -> ( 
-            IF Len(_log[_node_id]) = _log_offset_start THEN
+        CASE  Len(_log) <= _log_entries_skipped -> (
                 [
                     log_entries |-> _log_entries,
-                    index |-> _log_offset_start
+                    prev_index |-> _prev_index,
+                    seq_index_to_write |-> _log_entries_skipped + 1,
+                    truncate |-> FALSE
                 ]
-            ELSE
+            )
+        [] Len(_log_entries) = 0 -> (
                 [
                     log_entries |-> <<>>,
-                    index |-> _log_offset_start
+                    prev_index |-> _prev_index,
+                    seq_index_to_write |-> _log_entries_skipped + 1,
+                    truncate |-> FALSE
                 ]
         
-        )
-        [] _inconsistency_index #{} -> (
-               LET min_offset == Min(_inconsistency_index)
+           )
+        [] _inconsistency_index_of_log_entries #{} -> (
+               \* Ex:
+               \*   _prev_index :          N - M
+               \*   _prev_index + skpped : N
+               \*   Log:                 M skipped ...,   <<index |-> N + 1, term |-> 2>>, <<index |-> N + 2, term |-> 2>>,
+               \*   Entries to Append :                   <<index |-> N + 1, term |-> 2>>, <<index |-> N + 2, term |-> 3>>,
+               \*
+               \* min_offset == 2
+               LET min_index == Min(_inconsistency_index_of_log_entries)
                IN  
                     [
-                        log_entries |-> SubSeq(_log_entries, min_offset, Len(_log_entries)),
-                        index |-> _log_offset_start + min_offset - 1
+                        log_entries |-> SubSeq(_log_entries, min_index, Len(_log_entries)),
+                        min_index |-> min_index,
+                        log_entries_skipped |-> _log_entries_skipped,
+                        prev_index |-> _prev_index + min_index - 1,
+                        seq_index_to_write |-> _log_entries_skipped + min_index,
+                        truncate |-> TRUE
                     ]
               )
         [] OTHER -> (
-                [
-                    
-                    log_entries |-> SubSeq(_log_entries, _index + 1, Len(_log_entries)),
-                    index |-> Len(_log[_node_id])
-                ]
+                    LET _consistency_index_of_log_entries == { i \in 1..Len(_log_entries):
+                            /\ i + _log_entries_skipped <= Len(_log)
+                            /\ _log_entries[i ].term = _log[i + _log_entries_skipped].term
+                         }
+                         max_index == IF _inconsistency_index_of_log_entries = {} THEN 1 ELSE Max(_consistency_index_of_log_entries)
+                    IN
+                    [
+                        max_index |-> max_index,
+                        log_entries |-> SubSeq(_log_entries, max_index + 1, Len(_log_entries)),
+                        prev_index |-> _prev_index + max_index,
+                        seq_index_to_write |-> _log_entries_skipped + max_index + 1,
+                        truncate |-> FALSE
+                    ]
         )
-        
+       
 _LogEntriesAppendResult(
     _log,
-    _node_id,
     _log_entries, 
-    _log_offset_start
+    _prev_index,
+    _snapshot_last_index
 ) ==
-    CASE Len(_log[_node_id]) >= _log_offset_start -> (
-        _LogEntryTruncateOrAppend(_log, _node_id, _log_entries, _log_offset_start)
+    CASE 
+        /\ _prev_index >= _snapshot_last_index
+        /\ Len(_log) >= _prev_index - _snapshot_last_index -> (
+        _LogEntryTruncateOrAppend(_log, _log_entries, _prev_index, _snapshot_last_index)
     )
     [] OTHER -> ( 
         {} \* not possible
@@ -253,42 +291,47 @@ ValueIndexLessLimit(
     {vi \in _value_index: vi.index <= _index}
 
 LogAfterAppendEntries(
-    _log,
     _node_id,
+    _log,
     _recv_log_entries, 
-    _log_offset_start,
+    _prev_index,
+    _snapshot_last_index,
     _reconfig_value
 ) ==
-    LET _result == _LogEntriesAppendResult(_log, _node_id, _recv_log_entries, _log_offset_start)
-        _index == _result.index \* new prev_index
+    LET _result == _LogEntriesAppendResult(_log,  _recv_log_entries, _prev_index, _snapshot_last_index)
+        _index == _result.prev_index \* new prev_index
         _to_append_entries == _result.log_entries
+        _seq_index_to_write == _result.seq_index_to_write \* index of _log sequence
         _vi_reconfig == FirstCommandOf(_to_append_entries, _reconfig_value)
-        _vi_reconfig_log == FirstCommandOf(_log[_node_id], _reconfig_value)
+        _vi_reconfig_log == FirstCommandOf(_log, _reconfig_value)
         _entries == IF _vi_reconfig_log = {} THEN
                         \* when there is a compation command value in log
                         \* we must wait untill it commit and execute compation to append new log entries
                         TruncateEntries(_to_append_entries, _vi_reconfig)
                     ELSE <<>>
         reconfig_vi == ValueIndexLessLimit(_vi_reconfig, Len(_entries))
-        _log_node== IF Len(_log[_node_id]) > 0 THEN 
-                        SubSeq(_log[_node_id], 1, Min({_index + Len(_entries), Len(_log[_node_id])})) 
-                    ELSE <<>>
-        _log_index == 1..Len(_log_node)
+        _log_index == IF _result.truncate THEN
+                            1.. Min({Len(_log), _seq_index_to_write + Len(_entries) - 1})      
+                      ELSE 
+                            1..Len(_log)
         _log_index_to_update == IF Len(_entries) = 0 THEN
                     {}
-                ELSE
+                ELSE 
+                    
+                    
                     \* Len(_entries) must >= 1
                     \* log offset [1..Len(_entries)]
-                    _index + 1 .. _index + Len(_entries)
+                    _seq_index_to_write .. _seq_index_to_write + Len(_entries) - 1
        __dump == [
+                log |-> _log,
+                seq_index_to_write |-> _seq_index_to_write,
                 entries |-> _entries,
                 new |-> _log_index_to_update,
                 original |-> _log_index,
                 node_id |-> _node_id,
                 index |-> _index
             ]
-    IN      [   
-                prev_match_index |-> _index,
+    IN      [  
                 match_index |->  _index + Len(_entries),
                 log |-> (IF  _log_index \cup _log_index_to_update = {} THEN 
                             <<>>
@@ -296,27 +339,28 @@ LogAfterAppendEntries(
                             [
                                     i \in _log_index \cup _log_index_to_update |-> 
                                         IF i \in _log_index_to_update THEN
-                                            IF i - _index \notin DOMAIN _entries THEN
+                                            IF i - _seq_index_to_write + 1 \notin DOMAIN _entries THEN
                                                 __dump.non_exist1
                                             ELSE 
-                                               _entries[i - _index]
+                                               _entries[i - _seq_index_to_write + 1]
                                         ELSE
                                             IF i  \notin _log_index THEN
                                                 __dump.non_exist2
                                             ELSE  
-                                                _log_node[i]
+                                                _log[i]
                             ]),
                 reconfig |-> reconfig_vi
            ]
 
+
+     
 APPEND_RESULT_REJECT == "reject_append"
 APPEND_RESULT_TO_FOLLOWER == "to_follower"
 APPEND_RESULT_ACCEPT == "accept_append"
 APPEND_RESULT_STALE_INDEX == "stale_index" 
 
 HandleAcceptAppend(
-    dst, 
-    src, 
+    _node_id, \* only used by checking invariants
     prev_log_index, 
     term, 
     log_entries,
@@ -325,38 +369,36 @@ HandleAcceptAppend(
     _v_history,
     _reconfig_value_set
 ) ==
-    CASE _v_snapshot[dst].index > prev_log_index -> (
+    CASE _v_snapshot.index > prev_log_index -> (
              [ append_result |-> APPEND_RESULT_STALE_INDEX ]
         ) 
     []OTHER -> (
         \* foreach log entry in log_entries seqneuce
            LET  _entries == log_entries
-                snapshot_last_index == _v_snapshot[dst].index
-                snapshot_last_term == _v_snapshot[dst].term
-                prev_i == prev_log_index  - snapshot_last_index
+                snapshot_last_index == _v_snapshot.index
                 l == LogAfterAppendEntries(
-                            _v_log, 
-                            dst, 
-                            _entries, 
-                            prev_i, 
+                            _node_id, 
+                            _v_log,
+                            _entries,
+                            prev_log_index, 
+                            snapshot_last_index, 
                             _reconfig_value_set)
-                match_index == l.match_index + snapshot_last_index
             IN [
                     append_result |-> APPEND_RESULT_ACCEPT,
                     log |-> l.log,
-                    match_index |-> l.match_index + snapshot_last_index
+                    match_index |-> l.match_index
                ] 
     )
 
  
 HandleAppendLogInner(
+    _node_id,
     _v_log,
     _v_snapshot,
     _v_current_term,
     _v_state,
     _v_history,
     _reconfig_value_set,
-    _node_id,
     _leader_node_id,
     _prev_log_index,
     _prev_log_term,
@@ -366,24 +408,23 @@ HandleAppendLogInner(
     LET log_ok == LogPrevEntryOK(
                     _v_log,
                     _v_snapshot,
-                    _node_id,
                     _prev_log_index,
                     _prev_log_term)
     IN \* reject request
-         CASE RejectAppendLog(_v_current_term, _v_state, _node_id, _term, log_ok) ->
+         CASE RejectAppendLog(_v_current_term, _v_state,  _term, log_ok) ->
               [
                 append_result |-> APPEND_RESULT_REJECT
               ]
          
          \* to follower state
-         [] CandidateBecomeFollower(_v_current_term, _v_state, _node_id, _term) ->
+         [] CandidateBecomeFollower(_v_current_term, _v_state,  _term) ->
               [
                 append_result |-> APPEND_RESULT_TO_FOLLOWER
               ]
          \* OK, append the log
-         [] FollowerAcceptAppendLog(_v_current_term, _v_state, _node_id, _term, log_ok) ->
+         [] FollowerAcceptAppendLog(_v_current_term, _v_state,  _term, log_ok) ->
               HandleAcceptAppend(
-                    _node_id, _leader_node_id, _prev_log_index, _term, _log_entries, 
+                    _node_id,  _prev_log_index, _term, _log_entries, 
                     _v_log, _v_snapshot, _v_history, _reconfig_value_set
                 )
          [] OTHER -> (
@@ -391,6 +432,126 @@ HandleAppendLogInner(
                 append_result  |-> "other"
               ]
          )
-
+         
+    
+_TestLogEntryTruncateOrAppend== 
+    /\ LET r1 == _LogEntryTruncateOrAppend(
+            <<[index |-> 1, term |-> 2, value |-> 1]>>, 
+            <<[index |-> 2, term |-> 2, value |-> 2]>>, 
+            1,
+            0)
+       IN /\ r1.prev_index = 1
+           /\ r1.seq_index_to_write = 2
+           /\ ~r1.truncate
+           /\ Len(r1.log_entries) = 1
+    /\ LET r2 == _LogEntryTruncateOrAppend(
+            <<
+                [index |-> 12, term |-> 2, value |-> 2], 
+                [index |-> 13, term |-> 2, value |-> 2],
+                [index |-> 14, term |-> 2, value |-> 2]
+            >>, 
+            <<
+                [index |-> 13, term |-> 2, value |-> 2],
+                [index |-> 14, term |-> 3, value |-> 4]
+            >>, 
+            12,
+            11)
+        IN /\ r2.prev_index = 13
+           /\ r2.seq_index_to_write = 3
+           /\ r2.truncate
+           /\ Len(r2.log_entries) = 1
+    /\ LET r3 == _LogEntryTruncateOrAppend(
+            <<
+                [index |-> 12, term |-> 2, value |-> 2], 
+                [index |-> 13, term |-> 3, value |-> 3],
+                [index |-> 14, term |-> 3, value |-> 4]
+            >>, 
+            <<  [index |-> 13, term |-> 3, value |-> 3] >>, 
+            12,
+            11)
+       IN  /\ r3.prev_index = 13
+           /\ r3.seq_index_to_write = 3
+           /\ ~r3.truncate
+           /\ Len(r3.log_entries) = 0
+    /\ LET r4 == _LogEntryTruncateOrAppend(
+            <<
+                [index |-> 12, term |-> 2, value |-> 2], 
+                [index |-> 13, term |-> 3, value |-> 3]
+            >>, 
+            <<  [index |-> 13, term |-> 3, value |-> 3],
+                [index |-> 14, term |-> 3, value |-> 4],
+                [index |-> 15, term |-> 3, value |-> 5]
+            >>,
+            12,
+            11)
+        IN /\ r4.prev_index = 13
+           /\ r4.seq_index_to_write = 3
+           /\ ~r4.truncate
+           /\ Len(r4.log_entries) = 2
+     /\ LET r5 == _LogEntryTruncateOrAppend(
+            <<[index |-> 1, term |-> 2,  value |-> 1]>>, 
+            <<[index |-> 1, term |-> 2,  value |-> 1], [index |-> 2, term |-> 2,  value |-> 2]>>,
+            0,
+            0)
+         IN  /\ r5.prev_index = 1
+             /\ r5.seq_index_to_write = 2
+             /\ ~r5.truncate
+             /\ Len(r5.log_entries) = 1      
+       
+__TestLogAfterAppendEntries ==
+     /\ LET r == LogAfterAppendEntries(
+                1,
+                <<[index |-> 1, term |-> 2,  value |-> 1]>>,
+                <<[index |-> 1, term |-> 2,  value |-> 1], [index |-> 2, term |-> 2,  value |-> 2]>>,
+                0,
+                0,
+                {}
+                )
+        IN  /\ r.match_index = 2
+            /\ Len(r.log) = 2
+     /\ LET r == LogAfterAppendEntries(
+                1,
+                <<[index |-> 1, term |-> 2,  value |-> 1]>>,
+                <<>>,
+                0,
+                0,
+                {}
+                )
+        IN  /\ r.match_index = 0
+            /\ Len(r.log) = 1
+     /\ LET r == LogAfterAppendEntries(
+                1,
+                <<
+                    [index |-> 1, term |-> 2,  value |-> 1], 
+                    [index |-> 2, term |-> 2,  value |-> 2], 
+                    [index |-> 3, term |-> 2,  value |-> 3]
+                >>,
+                <<
+                    [index |-> 1, term |-> 2,  value |-> 1], 
+                    [index |-> 2, term |-> 3,  value |-> 2]
+                >>,
+                0,
+                0,
+                {}
+                )
+        IN  /\ r.match_index = 2
+            /\ Len(r.log) = 2
+    /\ LET r == LogAfterAppendEntries(
+                1,
+                <<
+                    [index |-> 2, term |-> 2,  value |-> 2]
+                >>,
+                <<
+                    [index |-> 2, term |-> 2,  value |-> 2]
+                >>,
+                1,
+                1,
+                {}
+                )
+        IN  /\ r.match_index = 2
+            /\ Len(r.log) = 1    
+            
+  
+   
 
 =============================================================================

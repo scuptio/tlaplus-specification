@@ -23,46 +23,46 @@ CONSTANT DB_ACTION_PATH
 ----
 
 
-VARIABLE state
-VARIABLE current_term
-VARIABLE log
-VARIABLE snapshot
-VARIABLE voted_for
-VARIABLE event
-VARIABLE history
-VARIABLE commit_index
+VARIABLE v_state
+VARIABLE v_current_term
+VARIABLE v_log
+VARIABLE v_snapshot
+VARIABLE v_voted_for
+VARIABLE v_event
+VARIABLE v_history
+VARIABLE v_commit_index
 VARIABLE __action__
 
 vars == <<
-    state,
-    current_term,
-    log, 
-    snapshot,
-    voted_for,
-    commit_index,
-    event,
-    history,
+    v_state,
+    v_current_term,
+    v_log, 
+    v_snapshot,
+    v_voted_for,
+    v_commit_index,
+    v_event,
+    v_history,
     __action__
 >>
 
 vars_view == <<
-    state,
-    current_term,
-    log, 
-    snapshot,
-    commit_index,
-    voted_for,
-    event
+    v_state,
+    v_current_term,
+    v_log, 
+    v_snapshot,
+    v_commit_index,
+    v_voted_for,
+    v_event
 >>
 
 
 _RaftVariables(_nid) ==
     [
-        state |-> state[_nid],
-        current_term |-> current_term[_nid],
-        log |-> log[_nid],
-        snapshot |-> snapshot[_nid],
-        voted_for |-> voted_for[_nid],
+        state |-> v_state[_nid],
+        current_term |-> v_current_term[_nid],
+        log |-> v_log[_nid],
+        snapshot |-> v_snapshot[_nid],
+        voted_for |-> v_voted_for[_nid],
         \* ignore the following
         vote_granted |-> {},
         commit_index |-> 0,
@@ -96,17 +96,17 @@ InitActionSeqSetup ==
                                    
 SaveVars ==
     [
-        state |-> state,
-        current_term |-> current_term,
-        log |-> log,
-        snapshot |-> snapshot,
-        voted_for |-> voted_for
+        state |-> v_state,
+        current_term |-> v_current_term,
+        log |-> v_log,
+        snapshot |-> v_snapshot,
+        voted_for |-> v_voted_for
     ]
 
 
 SaveActions ==
     DB_ACTION_PATH /= "" =>
-        SaveValue(__action__', DB_ACTION_PATH)
+        SaveValue(__action__, DB_ACTION_PATH)
 
 InitStateDB == 
     /\ DB_STATE_PATH /= "" => 
@@ -114,83 +114,83 @@ InitStateDB ==
     /\ DB_ACTION_PATH /= "" =>
         SaveValue(__action__, DB_ACTION_PATH)
 
-SaveState ==
+SaveStates ==
     DB_STATE_PATH /= "" => 
         SaveValue(SaveVars, DB_STATE_PATH)
         
 Init ==
     /\ InitSaftyStateTrival(
-        state,
-        current_term,
-        log,
-        snapshot,
-        voted_for,
+        v_state,
+        v_current_term,
+        v_log,
+        v_snapshot,
+        v_voted_for,
         NODE_ID,
         VALUE,
         MAX_TERM,
         1, 
         1
         )
-    /\ event = {}
-    /\ commit_index = 0
-    /\ history = <<>>
+    /\ v_event = {}
+    /\ v_commit_index = 0
+    /\ v_history = <<>>
     /\ LET actions == InitActionSeqSetup
-        IN InitAction(
+        IN InitActionT(
             __action__,
             actions,
             actions
         )
-    /\ InitStateDB
 
 
 RequestVote(nid) ==
-    /\ TermLE(nid, current_term, MAX_TERM)
-    /\ state[nid] = Follower
-    /\ state' = [state EXCEPT ![nid] = Candidate]
-    /\ current_term' = [current_term EXCEPT ![nid] = current_term[nid] + 1]
-    /\ event' = event \union 
+    /\ TermLE(nid, v_current_term, MAX_TERM)
+    /\ v_state[nid] = Follower
+    /\ v_state' = [v_state EXCEPT ![nid] = Candidate]
+    /\ v_current_term' = [v_current_term EXCEPT ![nid] = v_current_term[nid] + 1]
+    /\ v_event' = v_event \union 
             {[
                 event_type  |-> "RequestVote",
-                term |-> current_term[nid] + 1,
-                last_log_term |-> LastLogTerm(log[nid], snapshot[nid]),
-                last_log_index |-> Len(log[nid]),
+                term |-> v_current_term[nid] + 1,
+                last_log_term |-> LastLogTerm(v_log[nid], v_snapshot[nid]),
+                last_log_index |-> Len(v_log[nid]),
                 node_id |-> nid
              ]}
-    /\ voted_for' = [voted_for EXCEPT ![nid] = nid]
+    /\ v_voted_for' = [v_voted_for EXCEPT ![nid] = nid]
 	/\ LET actions0 == ActionSeqSetupAll
            actions1 == ActionSeqCheck(nid)
 	       actions2 == Action(ActionInput, MessageNP(nid, nid, __ActionRequestVote)) 
-       IN SetAction(__action__,  actions0, actions1 \o actions2)
+       IN SetAction(__action__,  actions0, actions1 \o actions2, ENABLE_ACTION)
     /\ UNCHANGED <<
-             commit_index,
-             history,
-             log,
-             snapshot
+             v_commit_index,
+             v_history,
+             v_log,
+             v_snapshot
         >>   
     
-HandleRequestVote(src, dst) ==
-    \E e \in event:
+HandleRequestVote(dst) ==
+    \E e \in v_event:
+        /\ e.node_id # dst
         /\ e.event_type = "RequestVote"
-        /\ src = e.node_id
-        /\ LET _term == e.term 
+        /\ LET src == e.node_id
+               _term == e.term 
                _last_log_term == e.last_log_term
                _last_log_index == e.last_log_index
                _voted_for_node == e.node_id
-               _current_term == current_term[dst]
+               _current_term == v_current_term[dst]
+               
                _granted == VoteCanGrant(
-                        current_term,
-                        log,
-                        snapshot,
-                        voted_for,
+                        v_current_term[dst],
+                        v_log[dst],
+                        v_snapshot[dst],
+                        v_voted_for[dst],
                         _voted_for_node,
-                        dst,
                         _term, 
                         _last_log_term, 
                         _last_log_index)
-           IN /\ current_term[dst] = _term
+           IN /\ v_current_term[dst] = _term
               /\ _granted 
-              /\ voted_for' = [voted_for EXCEPT ![dst] = _voted_for_node]
-              /\ event' = event \union 
+              /\ v_voted_for' = [v_voted_for EXCEPT ![dst] = _voted_for_node]
+              /\ v_event' = v_event \union 
                     {[
                         event_type  |-> "HandleRequestVote",
                         term |-> _term,
@@ -206,106 +206,111 @@ HandleRequestVote(src, dst) ==
                  IN LET actions0 == ActionSeqSetupAll
                         actions1 == ActionSeqCheck(dst)
                         actions2 == Action(ActionInput, Message(src, dst, __ActionHandleVoteRequest, m))       
-                    IN SetAction(__action__,  actions0, actions1 \o actions2)
+                    IN SetAction(__action__,  actions0, actions1 \o actions2, ENABLE_ACTION)
                         /\ UNCHANGED <<
-                            commit_index, history, state, current_term, log, snapshot
+                            v_commit_index, v_history, v_state, v_current_term, v_log, v_snapshot
                         >>
 
 
 BecomeLeader(nid) == 
     /\ \E quorum \in QuorumOf(NODE_ID):
-        /\ \A vote_granted_nid \in quorum: 
-            \/ vote_granted_nid = nid
-            \/ (\E e \in event:
+        /\ \A _node_id \in quorum: 
+            /\ _node_id = nid => 
+                   (\E e \in v_event:
+                        /\ e.event_type = "RequestVote"
+                        /\ e.term = v_current_term[nid]
+                        /\ e.node_id = _node_id
+                   )
+            /\ _node_id # nid => 
+                (\E e \in v_event:
                     /\ e.event_type = "HandleRequestVote"
                     /\ e.voted_for = nid
-                    /\ e.node_id = vote_granted_nid
-                    /\ e.term = current_term[vote_granted_nid]
+                    /\ e.node_id = _node_id
+                    /\ e.term = v_current_term[nid]
                 )
-        /\ state[nid] = Candidate
-        /\ state' = [state EXCEPT ![nid] = Leader]
+        /\ v_state[nid] = Candidate
+        /\ v_state' = [v_state EXCEPT ![nid] = Leader]
     /\ LET  actions0 == ActionSeqSetupAll
             actions1 == ActionSeqCheck(nid)
             actions2  == Action(ActionInput, MessageNP(nid, nid, __ActionBecomeLeader))
-        IN SetAction(__action__, actions0, actions1 \o actions2)
+        IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
     /\ LET o == 
         [
             election |-> 
             [
                leader |-> nid,
-               term |-> current_term[nid],
-               log |-> log[nid],
-               snapshot |-> snapshot[nid]
+               term |-> v_current_term[nid],
+               log |-> v_log[nid],
+               snapshot |-> v_snapshot[nid]
             ]
         ] 
-        IN history' = AppendHistory(history, o, CHECK_SAFETY)
-     /\ UNCHANGED <<commit_index, current_term, log, snapshot, voted_for, event>>
+        IN v_history' = AppendHistory(v_history, o, CHECK_SAFETY)
+     /\ UNCHANGED <<v_commit_index, v_current_term, v_log, v_snapshot, v_voted_for, v_event>>
 
-UpdateTerm(src, dst) ==
-    /\ (\E e \in event:
-            /\ e.node_id = src
-            /\ e.term > current_term[dst]
+UpdateTerm(dst) ==
+    /\ (\E e \in v_event:
+            /\ e.node_id # dst
+            /\ e.term > v_current_term[dst]
             /\ e.event_type \in { "RequestVote", "AppendLog" }
-            /\ state' = [state EXCEPT ![dst] = Follower]
-            /\ current_term' = [current_term EXCEPT ![dst] = e.term]
-            /\ voted_for' = [voted_for EXCEPT ![dst] = INVALID_NODE_ID]
-    
-            /\ LET actions0 == ActionSeqSetupAll
+            /\ v_state' = [v_state EXCEPT ![dst] = Follower]
+            /\ v_current_term' = [v_current_term EXCEPT ![dst] = e.term]
+            /\ v_voted_for' = [v_voted_for EXCEPT ![dst] = INVALID_NODE_ID]
+            /\ LET  src == e.node_id
+                    actions0 == ActionSeqSetupAll
                     actions1 == ActionSeqCheck(dst)
                     actions2 == Action(ActionInput, Message(src, dst, __ActionHandleUpdateTerm, e.term))
-                IN SetAction(__action__, actions0, actions1 \o actions2)
+                IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
         )
-     /\ UNCHANGED <<commit_index, history, log, snapshot, event>>
+     /\ UNCHANGED <<v_commit_index, v_history, v_log, v_snapshot, v_event>>
 
 AppendLog(nid) ==
-    /\ state[nid] = Leader
-    /\ \E i \in 1..Len(log[nid]):
-        /\ event' = event \cup 
+    /\ v_state[nid] = Leader
+    /\ \E i \in 1..Len(v_log[nid]):
+        /\ v_event' = v_event \cup 
                             {[
                                 event_type  |-> "AppendLog",
-                                term |-> current_term[nid],
-                                log_entries |-> <<log[nid][i]>>,
+                                term |-> v_current_term[nid],
+                                log_entries |-> <<v_log[nid][i]>>,
                                 node_id |-> nid,
-                                prev_log_index |-> IF i <= 1 THEN snapshot[nid].index ELSE log[nid][i - 1].index ,
-                                prev_log_term |-> IF i <= 1 THEN snapshot[nid].term ELSE log[nid][i - 1].term,
-                                leader_log |-> IF CHECK_SAFETY THEN log[nid] ELSE <<>>,
-                                leader_snapshot |-> IF CHECK_SAFETY THEN snapshot[nid] ELSE {}
+                                prev_log_index |-> IF i <= 1 THEN v_snapshot[nid].index ELSE v_log[nid][i - 1].index ,
+                                prev_log_term |-> IF i <= 1 THEN v_snapshot[nid].term ELSE v_log[nid][i - 1].term,
+                                leader_log |-> IF CHECK_SAFETY THEN v_log[nid] ELSE <<>>,
+                                leader_snapshot |-> IF CHECK_SAFETY THEN v_snapshot[nid] ELSE {}
                                                     
                             ]}
         /\ LET  actions0 == ActionSeqSetupAll
                 actions1 == ActionSeqCheck(nid)
                 actions2 == Action(ActionInput, MessageNP(nid, nid, __ActionAppendLog))
-            IN SetAction(__action__, actions0, actions1 \o actions2)
-   /\ UNCHANGED <<commit_index, log, snapshot, state, voted_for, current_term, history>>
+            IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
+   /\ UNCHANGED <<v_commit_index, v_log, v_snapshot, v_state, v_voted_for, v_current_term, v_history>>
    
 
 _HandleRejectRequest ==
-    UNCHANGED <<voted_for>>
+    UNCHANGED <<v_voted_for>>
             
 _HandleCandidateBecomeFollower(_node_id) ==
-    /\ state' = [state EXCEPT ![_node_id] = Follower]
-    /\ voted_for' = [voted_for EXCEPT ![_node_id] = INVALID_NODE_ID]
-    /\ UNCHANGED <<current_term, log, snapshot, event, history>>
+    /\ v_state' = [v_state EXCEPT ![_node_id] = Follower]
+    /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = INVALID_NODE_ID]
+    /\ UNCHANGED <<v_current_term, v_log, v_snapshot, v_event, v_history>>
 
 
 
 _HANDLE_APPEND_TO_LOG ==
-    UNCHANGED <<voted_for>>
+    UNCHANGED <<v_voted_for>>
 
     
     
-HandleAppendLog(src, dst) ==
-    /\ \E e \in event:                               
+HandleAppendLog(_node_id) ==
+    /\ \E e \in v_event:                               
         /\ e.event_type = "AppendLog"
-        /\ e.node_id = src
-        /\ e.node_id /= dst
+        /\ e.node_id /= _node_id
         /\ LET  
+                src == e.node_id
                 prev_log_index == e.prev_log_index
                 prev_log_term == e.prev_log_term
                 log_ok == LogPrevEntryOK(
-                    log, 
-                    snapshot,
-                    dst, 
+                    v_log[_node_id], 
+                    v_snapshot[_node_id],
                     prev_log_index, 
                     prev_log_term)
                 term == e.term
@@ -321,13 +326,13 @@ HandleAppendLog(src, dst) ==
 
                     ]
                 result == HandleAppendLogInner(
-                        log,
-                        snapshot,
-                        current_term,
-                        state,
-                        history,
+                        _node_id,
+                        v_log[_node_id],
+                        v_snapshot[_node_id],
+                        v_current_term[_node_id],
+                        v_state[_node_id],
+                        v_history,
                         RECONFIG_VALUE,
-                        dst,
                         src,
                         prev_log_index,
                         prev_log_term,
@@ -335,91 +340,81 @@ HandleAppendLog(src, dst) ==
                         log_entries
                      )
           IN /\ (CASE  result.append_result = APPEND_RESULT_REJECT -> (
-                      UNCHANGED <<current_term, state, voted_for, log, snapshot, event, history>>
+                      UNCHANGED <<v_current_term, v_state, v_voted_for, v_log, v_snapshot, v_event, v_history>>
                  )
                  [] result.append_result = APPEND_RESULT_TO_FOLLOWER -> (
-                      /\ state' = [state EXCEPT ![dst] = Follower]
-                      /\ voted_for' = [voted_for EXCEPT ![dst] = INVALID_NODE_ID]
-                      /\ UNCHANGED <<current_term, log, snapshot, event, history>>
-                 )
-                 [] result.append_result = APPEND_RESULT_STALE_INDEX -> (
-                      /\ LET _e == [
-                                event_type |-> "HandleAppendLog",
-                                term |-> term,
-                                node_id |-> dst,
-                                leader_node_id |-> src,
-                                append_success |-> TRUE,
-                                match_index |-> snapshot[dst].index
-                              ]
-                              IN event' = event \cup {_e} 
-                                
-                      /\ UNCHANGED <<current_term, state, voted_for, log, snapshot, history>>                         
+                      /\ v_state' = [v_state EXCEPT ![_node_id] = Follower]
+                      /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = INVALID_NODE_ID]
+                      /\ UNCHANGED <<v_current_term, v_log, v_snapshot, v_event, v_history>>
                  )
                  [] result.append_result = APPEND_RESULT_ACCEPT -> (
                         /\ LET _e == [
                                 event_type |-> "HandleAppendLog",
                                 term |-> term,
-                                node_id |-> dst,
+                                node_id |-> _node_id,
                                 leader_node_id |-> src,
                                 append_success |-> TRUE, 
                                 match_index |-> result.match_index
                               ]
                               
-                            IN event' = event \cup {_e}
-                        /\ log' = [log EXCEPT ![dst] = result.log]
+                            IN v_event' = v_event \cup {_e}
+                        /\ v_log' = [v_log EXCEPT ![_node_id] = result.log]
                         /\ IF CHECK_SAFETY THEN
                                 LET leader_log == e.leader_log
                                    leader_snapshot == e.leader_snapshot
                                    op == [
                                         follower_append |-> [
-                                            node_id |-> dst,
                                             leader_log |-> leader_log,
                                             leader_snapshot |-> leader_snapshot,
-                                            follower_log |-> result.log,
-                                            follower_snapshot |-> snapshot[dst]
+                                            follower_log |->  
+                                                    IF Len(result.log) = 0 THEN
+                                                        <<>>
+                                                    ELSE
+                                                        SubSeq(result.log, 1, result.match_index - v_snapshot[_node_id].index),
+                                            follower_snapshot |-> v_snapshot[_node_id]
                                         ]
                                     ]
-                                 IN history' = AppendHistory(history, op, CHECK_SAFETY)
-                            ELSE UNCHANGED <<history>>
-                       /\ UNCHANGED <<current_term, state, voted_for, snapshot>>
+                                 IN v_history' = AppendHistory(v_history, op, CHECK_SAFETY)
+                            ELSE UNCHANGED <<v_history>>
+                       /\ UNCHANGED <<v_current_term, v_state, v_voted_for, v_snapshot>>
                  )
                  [] OTHER  -> (
                     FALSE
                  )
                 )
               /\ LET actions0 == ActionSeqSetupAll 
-                    actions1 == ActionSeqCheck(dst)
-                    actions2 == Action(ActionInput, Message(src, dst, __ActionHandleAppendLogRequest, msg_payload))
-                 IN SetAction(__action__,  actions0, actions1 \o actions2)
-    /\ UNCHANGED <<commit_index>>
+                    actions1 == ActionSeqCheck(_node_id)
+                    actions2 == Action(ActionInput, Message(src, _node_id, __ActionHandleAppendLogRequest, msg_payload))
+                 IN SetAction(__action__,  actions0, actions1 \o actions2, ENABLE_ACTION)
+    /\ UNCHANGED <<v_commit_index>>
 
 
 ClientRequest(nid, v) ==
-    /\ state[nid] = Leader
-    /\ ~LogHasValue(log, snapshot, nid, v)
+    /\ v_state[nid] = Leader
+    /\ ~LogHasValue(v_log[nid], v_snapshot[nid], v)
     /\  LET entry == [
-                index |-> Len(log[nid]) + 1,
-                term  |-> current_term[nid],
+                index |-> LastLogIndex(v_log[nid], v_snapshot[nid]) + 1,
+                term  |-> v_current_term[nid],
                 value |-> v]
-        IN /\ log' = [log EXCEPT ![nid] = Append(log[nid], entry)]
+        IN /\ v_log' = [v_log EXCEPT ![nid] = Append(v_log[nid], entry)]
     /\ LET  actions0 == ActionSeqSetupAll
             actions1 == ActionSeqCheck(nid)
             actions2 == Action(ActionInput, Message(nid, nid, __ActionClientRequest, v))
-        IN SetAction(__action__, actions0, actions1 \o actions2)
-    /\ UNCHANGED <<commit_index, history, current_term, state, voted_for, snapshot, event>> 
+        IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
+    /\ UNCHANGED <<v_commit_index, v_history, v_current_term, v_state, v_voted_for, v_snapshot, v_event>> 
 
 LeaderAdvanceCommitIndex(nid) ==
-    /\ state[nid] = Leader
+    /\ v_state[nid] = Leader
     /\  LET indexes == { 
-            i \in 1..LastLogIndex(log[nid], snapshot[nid]) :
+            i \in 1..LastLogIndex(v_log[nid], v_snapshot[nid]) :
                 /\ \E quorum \in QuorumOf(NODE_ID):
                     /\ \A _n \in quorum: 
                         \/ _n = nid
-                        \/ (\E e \in event:
+                        \/ (\E e \in v_event:
                                 /\ e.event_type = "HandleAppendLog"
                                 /\ e.node_id = _n
                                 /\ e.leader_node_id = nid
-                                /\ e.term = current_term[nid]
+                                /\ e.term = v_current_term[nid]
                                 /\ e.append_success
                                 /\ e.match_index >= i
                             )
@@ -427,30 +422,30 @@ LeaderAdvanceCommitIndex(nid) ==
            
        IN ( /\ Cardinality(indexes) > 0
             /\  LET max_commit_index == Max(indexes)
-                IN (/\ max_commit_index > commit_index
-                    /\ commit_index' = max_commit_index
+                IN (/\ max_commit_index > v_commit_index
+                    /\ v_commit_index' = max_commit_index
                     /\ LET  actions0 == ActionSeqSetupAll 
                         actions1 == ActionSeqCheck(nid)
                         actions2 == Action(ActionInput, Message(nid, nid, __ActionAdvanceCommitIndex, max_commit_index))
-                     IN SetAction(__action__, actions0, actions1 \o actions2)
+                     IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
                    )
            )
-    /\   UNCHANGED << state,
-                current_term,
-                log, 
-                snapshot,
-                voted_for,
-                event,
-                history
+    /\   UNCHANGED << v_state,
+                v_current_term,
+                v_log, 
+                v_snapshot,
+                v_voted_for,
+                v_event,
+                v_history
             >>
 
 LogCompaction(nid) ==
-    /\ snapshot[nid].index < commit_index
-    /\ LET last_log_index == LastLogIndex(log[nid], snapshot[nid])
-            compact_log_index == Min({last_log_index, commit_index})
-            offset == LogIndexToOffset(log[nid], snapshot[nid], compact_log_index)
-            term == LogTermOfIndex(log[nid], snapshot[nid], compact_log_index)
-            compact_log == SubSeq(log[nid], 1, offset)
+    /\ v_snapshot[nid].index < v_commit_index
+    /\ LET last_log_index == LastLogIndex(v_log[nid], v_snapshot[nid])
+            compact_log_index == Min({last_log_index, v_commit_index})
+            offset == LogIndexToOffset(v_log[nid], v_snapshot[nid], compact_log_index)
+            term == LogTermOfIndex(v_log[nid], v_snapshot[nid], compact_log_index)
+            compact_log == SubSeq(v_log[nid], 1, offset)
             
        IN ( /\ offset > 0
             /\ LET snapshot_values == { 
@@ -462,82 +457,51 @@ LogCompaction(nid) ==
                         /\ compact_log[i].value = v.value
                         /\ compact_log[i].index = v.index
                         }
-               IN snapshot' = [snapshot EXCEPT  ![nid] = [index |-> compact_log_index, term |-> term, value |-> snapshot[nid].value \cup snapshot_values] ]
-            /\ log' = [log EXCEPT  ![nid] = SubSeq(log[nid], offset + 1, Len(log[nid]))]
+               IN v_snapshot' = [v_snapshot EXCEPT  ![nid] = [index |-> compact_log_index, term |-> term, value |-> v_snapshot[nid].value \cup snapshot_values] ]
+            /\ v_log' = [v_log EXCEPT  ![nid] = SubSeq(v_log[nid], offset + 1, Len(v_log[nid]))]
             /\ LET  actions0 == ActionSeqSetupAll
                     actions1 == ActionSeqCheck(nid)
                     actions2 == Action(ActionInput, Message(nid, nid, __ActionLogCompaction, compact_log_index))
                     
-                IN SetAction(__action__, actions0, actions1 \o actions2)
+                IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
            )
     /\ UNCHANGED <<
-            state,
-            current_term,
-            voted_for,
-            commit_index,
-            event,
-            history>>
+            v_state,
+            v_current_term,
+            v_voted_for,
+            v_commit_index,
+            v_event,
+            v_history>>
 
 Restart(nid) ==
-    /\ state' = [state EXCEPT ![nid] = Follower]
+    /\ v_state' = [v_state EXCEPT ![nid] = Follower]
     /\ LET  actions0 == ActionSeqSetupAll
         actions1 == ActionSeqCheck(nid)
         actions2 == Action(ActionInput, MessageNP(nid, nid, __ActionRestart))
-       IN SetAction(__action__, actions0, actions1 \o actions2)
+       IN SetAction(__action__, actions0, actions1 \o actions2, ENABLE_ACTION)
     /\ UNCHANGED <<
-        current_term,
-        log, 
-        snapshot,
-        voted_for,
-        commit_index,
-        event,
-        history>>
+        v_current_term,
+        v_log, 
+        v_snapshot,
+        v_voted_for,
+        v_commit_index,
+        v_event,
+        v_history>>
     
 Next == 
     \/ \E nid \in NODE_ID:
-        \E value \in VALUE:   
-            /\ ClientRequest(nid, value)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid \in NODE_ID:  
-            /\ RequestVote(nid)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid1, nid2 \in NODE_ID:  
-            /\ nid1 /= nid2
-            /\ UpdateTerm(nid1, nid2)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid \in NODE_ID:  
-            /\ BecomeLeader(nid)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid \in NODE_ID:  
-            /\ AppendLog(nid)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid1, nid2 \in NODE_ID:
-            /\ nid1 /= nid2  
-            /\ HandleRequestVote(nid1, nid2)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid1, nid2 \in NODE_ID:  
-            /\ HandleAppendLog(nid1, nid2)   
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid \in NODE_ID:  
-            /\ LeaderAdvanceCommitIndex(nid)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid \in NODE_ID:
-            /\ LogCompaction(nid)
-            /\ SaveState
-            /\ SaveActions
-    \/ \E nid \in NODE_ID:
-            /\ Restart(nid)
-            /\ SaveState
-            /\ SaveActions
-            
+        \/ \E value \in VALUE:   
+            ClientRequest(nid, value)
+        \/ LeaderAdvanceCommitIndex(nid)
+        \/ LogCompaction(nid)
+        \/ Restart(nid)
+        \/ RequestVote(nid)
+        \/ BecomeLeader(nid)
+        \/ AppendLog(nid)
+        \/ HandleAppendLog(nid)  
+        \/ HandleRequestVote(nid)
+        \/ UpdateTerm(nid)
+
 \* The specification must start with the initial state and transition according
 \* to Next.
 Spec == 
@@ -545,67 +509,58 @@ Spec ==
     /\ [][Next]_vars
 
 
-StateOK ==
-    BaseStateOK(
-        state,
-        current_term,
-        log,
-        snapshot,
-        voted_for,
+
+AssertStateOK ==
+    /\ BaseStateOK(
+        v_state,
+        v_current_term,
+        v_log,
+        v_snapshot,
+        v_voted_for,
         NODE_ID,
         VALUE,
         MAX_TERM)
-   
+    /\ LogOK( 
+        v_current_term,
+        v_log,
+        v_snapshot,
+        NODE_ID,
+        VALUE,
+        MAX_TERM)
 
-LogTermGrowOK ==
-    LogTermGrow(log, snapshot, NODE_ID)
+AssertLogIndexTermGrow ==
+    InvLogIndexTermGrow(v_log, v_snapshot, NODE_ID)
             
         
-PrefixCommitted ==
-    InvariantPrefixCommitted(
-        log,
-        MAX_TERM,
+AssertPrefixCommitted ==
+    InvPrefixCommitted(
         NODE_ID,
-        history)
+        [i \in NODE_ID |-> v_commit_index],
+        v_log,
+        v_snapshot)
         
-AtMostOneLeaderPerTerm ==  
-    InvariantAtMostOneLeaderPerTerm(
-          history)
+AssertAtMostOneLeaderPerTerm ==  
+    InvAtMostOneLeaderPerTerm(
+          v_history)
     
-SnapshotCommit ==    
-    InvariantSnapshotCommit(
-        log,
-        snapshot,
-        NODE_ID)
     
-LogPrefixOK ==    
-    InvariantLogPrefix(
-        log,
-        snapshot,
-        NODE_ID)
-    
-FollowerAppend ==    
-    InvariantFollowerAppend(
-        history)
-        
-LogStateOK == 
-    LogOK( 
-        current_term,
-        log,
-        snapshot,
+AssertFollowerAppend ==    
+    InvFollowerAppend(
+        v_history)
+
+
+
+AssertLeaderHasAllAckedValues ==
+    InvLeaderHasAllAckedValues (
         NODE_ID,
         VALUE,
-        MAX_TERM)
+        {},
+        v_state,
+        v_current_term,
+        v_log,
+        v_snapshot
+        )
 
-Invariant ==
-    /\ StateOK
-    /\ LogTermGrowOK
-    /\ LogStateOK
-    /\ PrefixCommitted
-    /\ AtMostOneLeaderPerTerm
-    /\ SnapshotCommit
-    /\ LogPrefixOK
-    /\ FollowerAppend
 
 
 ===============================================================================

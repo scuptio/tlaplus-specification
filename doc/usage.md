@@ -1,6 +1,6 @@
 # Usage
 
-This repo depends some modules(likes [UUID](https://github.com/scuptio/TLAPlusCommunityModules/blob/master/modules/UUID.tla)) which overide operators.
+This repo depends some modules(likes [GenID](https://github.com/scuptio/TLAPlusCommunityModules/blob/master/modules/GenID.tla)) which overide operators.
 
 Setup by the following steps:
 
