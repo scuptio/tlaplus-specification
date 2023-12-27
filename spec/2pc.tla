@@ -46,7 +46,7 @@ vars_view == <<
 
 \* constant string definition
 _TM_ABORTING == "TMAborting"
-_TM_COMMITTING == "TMCommiting"
+_TM_COMMITTING == "TMCommitting"
 _TM_INVALID == "TMInvalid"
 _TM_RUNNING == "TMRunning"
 _TM_PREPARING == "TMPreparing"
@@ -128,19 +128,24 @@ enum MsgTx {
 @end@*)
 
 
-M_TM_PREPARE == "TMMsg::Prepare"
-M_TM_COMMIT == "TMMsg::Commit"
-M_TM_ABORT == "TMMsg::Abort"
-M_RM_ABORTED_ACK == "RMMsg::AbortedACK"
-M_RM_PREPARE_RESP == "RMMsg::PrepareResp"
-M_RM_COMMITTED_ACK == "RMMsg::CommittedACK"
+M_TM_MSG == "TMMsg"
+M_RM_MSG == "RMMsg"
+M_TM_PREPARE == "Prepare"
+M_TM_COMMIT == "Commit"
+M_TM_ABORT == "Abort"
+M_RM_ABORTED_ACK == "AbortedACK"
+M_RM_PREPARE_RESP == "PrepareResp"
+M_RM_COMMITTED_ACK == "CommittedACK"
 
 
-M_D_TM_PREPARE == "DTMTesting::TMPrepare"
-M_D_TM_TIMEOUT == "DTMTesting::TMTimeout"
-M_D_RM_ABORT == "DTMTesting::RMAbort"
+M_D_DTM_TESTING == "DTMTesting"
+
+
+M_D_TM_PREPARE == "TMPrepare"
+M_D_TM_TIMEOUT == "TMTimeout"
+M_D_RM_ABORT == "RMAbort"
 M_D_RESTART == "DTMTesting::Restart"
-M_D_RM_TIMEOUT == "DTMTesting::RMTimeout"
+M_D_RM_TIMEOUT == "RMTimeout"
 
 M_D_TM_COMMITED == "TMCommitted"
 M_D_TM_ABORTED == "TMAborted"
@@ -150,9 +155,10 @@ M_D_TM_SEND_ABORT == "TMSendAbort"
 M_D_SETUP == "DTMTesting::Setup"
 M_D_CHECK == "DTMTesting::Check"
 
-M_D_TM_ACCESS == "DTMTesting::TMAccess"
-M_D_RM_ACCESS == "DTMTesting::RMAccess"
-M_D_TX_BEGIN == "DTMTesting::TxBegin"
+
+M_D_TM_ACCESS == "TMAccess"
+M_D_RM_ACCESS == "RMAccess"
+M_D_TX_BEGIN == "TxBegin"
 
 MESSAGE_TYPE == 
 {
@@ -333,15 +339,17 @@ _HandleNodePayload(_nid) ==
 
 
 
-_ALLRMAtState(_collection, _states) ==
-    \A n \in DOMAIN _collection:
+_ALLRMAtState(_collection, _rm_ids, _states) ==
+    \A n \in _rm_ids:
         _collection[n] \in _states
 
 
 State2PC(_nid) == 
     [
-        v_tm_state |-> v_tm_state[_nid],
-        v_rm_state |-> v_rm_state[_nid]
+        node_id |-> _nid,
+        tm_state |-> v_tm_state[_nid],
+        rm_state |-> v_rm_state[_nid],
+        tm_rm_collection |-> v_tm_rm_collection[_nid]
     ]
 
 ActionSeqSetupAll ==
@@ -379,7 +387,7 @@ TxBegin(_nid, _xid) ==
     /\ v_tm_state' = [v_tm_state EXCEPT ![_nid][_xid] = [state |-> _TM_RUNNING, rm_id |-> {}]]
     /\ LET a0 == ActionSeqSetupAll
                 a1 == ActionCheckState(_nid)
-                m == MessageLocal(_nid, M_D_TX_BEGIN, [xid |-> _xid])
+                m == MessageLocal(_nid, M_D_DTM_TESTING, [x \in {M_D_TX_BEGIN} |-> _xid])
                 a2 == Action(ActionInput, m)
        IN SetAction(__action__, a0, a1 \o a2, ENABLE_ACTION)
     /\ UNCHANGED <<
@@ -400,12 +408,11 @@ TxAccess(_nid, _xid, _rm_nid) ==
     /\ v_rm_state' = [v_rm_state EXCEPT ![_rm_nid][_xid].state = _RM_RUNNING]
     /\ LET a0 == ActionSeqSetupAll
                 a1 == ActionCheckState(_nid)
-                m_tm == MessageLocal(_nid, M_D_TM_ACCESS, [xid |-> _xid])
+                m_tm == MessageLocal(_nid, M_D_DTM_TESTING, [_m \in {M_D_TM_ACCESS} |-> [xid |-> _xid, tm_id |-> _nid, rm_id |-> _rm_nid]])
                 a2 == Action(ActionInput, m_tm)
-                a3 == ActionCheckState(_rm_nid)
-                m_rm == MessageLocal(_rm_nid, M_D_TM_ACCESS, [xid |-> _xid])
-                a4 == Action(ActionInput, m_rm)
-       IN SetAction(__action__, a0, a1 \o a2 \o a3 \o a4, ENABLE_ACTION)
+                m_rm == MessageLocal(_rm_nid, M_D_DTM_TESTING,  [_m \in {M_D_RM_ACCESS} |-> [xid |-> _xid, tm_id |-> _nid, rm_id |-> _rm_nid]])
+                a3 == Action(ActionInput, m_rm)
+       IN SetAction(__action__, a0, a1 \o a2 \o a3, ENABLE_ACTION)
     /\ UNCHANGED <<
         vars_limit,
         v_pc_state,
@@ -425,7 +432,7 @@ TMTimeout(n, x) ==
        [] OTHER -> (
             FALSE
        )
-    /\ LET msg == Message(n, n, M_D_TM_TIMEOUT, [xid |-> x])
+    /\ LET msg == Message(n, n, M_D_DTM_TESTING, [m \in {M_D_TM_TIMEOUT} |-> x])
            a0 == ActionSeqSetupAll
            a1 == ActionCheckState(n)
            a2 == Action(ActionInput, msg) 
@@ -446,10 +453,18 @@ TMPrepare(n, x) ==
             rm_nids == _RMNodeAtState(v_tm_rm_collection[n][x], {_RM_RUNNING})
             need_coord == Cardinality(rm_node_id) > 1
             msgs == IF need_coord THEN
-                        MessageSet({n}, rm_nids, M_TM_PREPARE, [xid |-> x, rm_id |-> rm_node_id])
+                        MessageSet({n}, rm_nids, M_TM_MSG, 
+                                [
+                                    xid |-> x, 
+                                    msg |-> [_m \in {M_TM_PREPARE} |-> [source_id |-> n, rm_id |-> rm_node_id]]
+                                ])
                     ELSE
-                        MessageSet({n}, rm_nids, M_TM_COMMIT, [xid |-> x])
-            m_a == Message(n, n, M_D_TM_SEND_PREPARE, [xid |-> x])  
+                        MessageSet({n}, rm_nids, M_TM_MSG, 
+                                [
+                                    xid |-> x,
+                                    msg |-> [_m \in {M_TM_COMMIT} |-> n]
+                                ])
+            m_a == Message(n, n, M_D_DTM_TESTING, [_m \in {M_D_TM_SEND_PREPARE} |-> x])  
        IN /\ v_message' = v_message \union msgs
           /\ LET state == IF need_coord THEN
                             _TM_PREPARING
@@ -458,7 +473,7 @@ TMPrepare(n, x) ==
              IN v_tm_state' = [v_tm_state EXCEPT ![n][x].state = state]
           /\ LET a0 == ActionSeqSetupAll
                 a1 == ActionCheckState(n)
-                a2 == Action(ActionInternal, m_a)
+                a2 == Action(ActionInput, m_a)
                 a3 == Actions(ActionOutput, msgs)
              IN SetAction(__action__, a0, a1 \o a2 \o a3, ENABLE_ACTION)
     /\ UNCHANGED <<v_pc_state, v_rm_state, v_tm_rm_collection>>
@@ -484,9 +499,10 @@ _TMStateAdvance(_n, _x, _rm_collection, _pc_state) ==
 
 TMReceivePrepared(n, x, m) == 
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ m.name = M_RM_PREPARE_RESP
+    /\ m.name = M_RM_MSG
     /\ m.payload.xid = x
-    /\ m.payload.success
+    /\ M_RM_PREPARE_RESP \in DOMAIN(m.payload.msg)
+    /\ m.payload.msg[M_RM_PREPARE_RESP].success
     /\ m.dest = n
     /\ v_tm_state[n][x].state = _TM_PREPARING
     /\ LET a0 == ActionSeqSetupAll
@@ -505,31 +521,31 @@ TMSendCommit(n, x) ==
     /\ v_pc_state[n].xid = x
     /\ v_tm_state[n][x].state \in {_TM_PREPARING, _TM_COMMITTING}
     /\ LET rm_nids == _RMNodeAtState(v_tm_rm_collection[n][x], {_RM_PREPARED})
-            msgs == MessageSet({n}, rm_nids, M_TM_COMMIT, [xid |-> x])
-            a == Message(n, n, M_D_TM_SEND_COMMIT, [xid |-> x])
+            msgs == MessageSet({n}, rm_nids, M_TM_MSG, [xid |-> x, msg |-> [_m \in {M_TM_COMMIT} |-> n]])
+            a == Message(n, n, M_D_DTM_TESTING, [_m \in {M_D_TM_SEND_COMMIT} |-> x])
        IN /\ v_message' = v_message \union  msgs
           /\ LET 
                 a0 == ActionSeqSetupAll
-                a1 == ActionCheckState(n)
                 a2 == Action(ActionInternal, a) 
                 a3 == Actions(ActionOutput, msgs)
-             IN SetAction(__action__, a0, a1 \o a2 \o a3, ENABLE_ACTION) 
+             IN SetAction(__action__, a0,  a2 \o a3, ENABLE_ACTION)
     /\ v_tm_state' = [v_tm_state EXCEPT ![n][x].state = _TM_COMMITTING]
     /\ v_pc_state' = [v_pc_state EXCEPT ![n] = [state |-> _PC_INVALID]]
     /\ UNCHANGED <<v_rm_state, v_tm_rm_collection>>
 
 TMReceiveCommittedACK(n, x, m) == 
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ m.name = M_RM_COMMITTED_ACK
+    /\ m.name = M_RM_MSG
     /\ m.dest = n
     /\ m.payload.xid = x
+    /\ M_RM_COMMITTED_ACK \in DOMAIN m.payload.msg
     /\ v_tm_state[n][x].state = _TM_COMMITTING
     /\ LET a0 == ActionSeqSetupAll
            a1 == ActionCheckState(n)
            a2 == Action(ActionInput, m) 
        IN SetAction(__action__, a0, a1 \o a2, ENABLE_ACTION)
-    /\ v_tm_rm_collection' = [v_tm_rm_collection EXCEPT ![n][x][m.source] = _RM_INVALID]
-    /\ LET can_end == _ALLRMAtState(v_tm_rm_collection'[n][x], {_RM_INVALID})
+    /\ v_tm_rm_collection' = [v_tm_rm_collection EXCEPT ![n][x][m.source] = _RM_COMMITTED]
+    /\ LET can_end == _ALLRMAtState(v_tm_rm_collection'[n][x], v_tm_state[n][x].rm_id, {_RM_COMMITTED})
        IN  IF can_end THEN 
                 v_pc_state' = [v_pc_state EXCEPT ![n] = [state |-> _PC_TM_COMMITTED, xid |-> x]]
            ELSE 
@@ -538,16 +554,17 @@ TMReceiveCommittedACK(n, x, m) ==
 
 TMReceiveAbortedACK(n, x, m) == 
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ m.name = M_RM_ABORTED_ACK
+    /\ m.name = M_RM_MSG
     /\ m.dest = n
     /\ m.payload.xid = x
+    /\ M_RM_ABORTED_ACK \in DOMAIN m.payload.msg
     /\ v_tm_state[n][x].state = _TM_ABORTING
     /\ LET a0 == ActionSeqSetupAll
            a1 == ActionCheckState(n)
            a2 == Action(ActionInput, m) 
        IN SetAction(__action__, a0, a1 \o a2, ENABLE_ACTION)
-    /\ v_tm_rm_collection' = [v_tm_rm_collection EXCEPT ![n][x][m.source] = _RM_INVALID]
-    /\ LET can_end == _ALLRMAtState(v_tm_rm_collection'[n][x], {_RM_INVALID})
+    /\ v_tm_rm_collection' = [v_tm_rm_collection EXCEPT ![n][x][m.source] = _RM_ABORTED]
+    /\ LET can_end == _ALLRMAtState(v_tm_rm_collection'[n][x], v_tm_state[n][x].rm_id, {_RM_ABORTED})
        IN  IF can_end THEN 
                 v_pc_state' = [v_pc_state EXCEPT ![n] = [state |-> _PC_TM_ABORTED, xid |-> x]]
            ELSE 
@@ -561,25 +578,25 @@ TMSendAbort(n, x) ==
         \/ v_tm_state[n][x].state = _TM_PREPARING
         \/ v_tm_state[n][x].state = _TM_ABORTING
        )
-    /\ LET rm_nids == _RMNodeAtState(v_tm_rm_collection[n][x], {_RM_RUNNING, _RM_PREPARED, _RM_ABORTED})
-           msgs == MessageSet({n}, rm_nids, M_TM_ABORT, [xid |-> x])
-           a == Message(n, n, M_D_TM_SEND_ABORT, [xid |-> x])   
+    /\ LET rm_nids == _RMNodeAtState(v_tm_rm_collection[n][x], {_RM_RUNNING, _RM_PREPARED})
+           msgs == MessageSet({n}, rm_nids, M_TM_MSG, [xid |-> x, msg |-> [_m \in {M_TM_ABORT} |-> n]])
+           a == Message(n, n, M_D_DTM_TESTING, [_m \in {M_D_TM_SEND_ABORT} |-> x])   
        IN /\ v_message' = v_message \union msgs
           /\ LET 
                 a0 == ActionSeqSetupAll
-                a1 == ActionCheckState(n)
                 a2 == Action(ActionInternal, a) 
                 a3 == Actions(ActionOutput, msgs)
-             IN SetAction(__action__, a0, a1 \o a2 \o a3, ENABLE_ACTION) 
+             IN SetAction(__action__, a0, a2 \o a3, ENABLE_ACTION) 
     /\ v_tm_state' = [v_tm_state EXCEPT ![n][x].state = _TM_ABORTING]
     /\ v_pc_state' = [v_pc_state EXCEPT ![n] = [state |-> _PC_INVALID]]
     /\ UNCHANGED <<v_rm_state, v_tm_rm_collection>>
 
 TMReceivePrepareAbort(n, x, m) == 
-    /\ m.name = M_RM_PREPARE_RESP
+    /\ m.name = M_RM_MSG
     /\ m.dest = n
     /\ m.payload.xid = x
-    /\ ~ m.payload.success
+    /\ M_RM_PREPARE_RESP \in DOMAIN m.payload.msg
+    /\ ~ m.payload.msg[M_RM_PREPARE_RESP].success
     /\ v_pc_state[n].state = _PC_INVALID
     /\ v_tm_state[n][x].state = _TM_PREPARING
     /\ LET a0 == ActionSeqSetupAll
@@ -595,13 +612,13 @@ TMReceivePrepareAbort(n, x, m) ==
 TMAborted(n, x) ==
     /\ v_pc_state[n].state = _PC_TM_ABORTED
     /\ v_pc_state[n].xid = x
+    /\ _ALLRMAtState(v_tm_rm_collection[n][x], v_tm_state[n][x].rm_id, {_RM_ABORTED})
     /\ v_tm_state' = [v_tm_state EXCEPT ![n][x].state = _TM_ABORTED]
     /\ v_pc_state' = [v_pc_state EXCEPT ![n] = [state |-> _PC_INVALID]]
-    /\ LET a == Message(n, n, M_D_TM_ABORTED, [xid |-> x])
+    /\ LET a == Message(n, n, M_D_DTM_TESTING, [_m \in {M_D_TM_ABORTED} |-> x])
            a0 == ActionSeqSetupAll
-           a1 == ActionCheckState(n)
            a2 == Action(ActionInternal, a) 
-       IN SetAction(__action__, a0, a1 \o a2, ENABLE_ACTION) 
+       IN SetAction(__action__, a0, a2, ENABLE_ACTION) 
     /\ UNCHANGED <<
         v_tm_rm_collection,
         v_rm_state, 
@@ -611,13 +628,13 @@ TMAborted(n, x) ==
 TMCommitted(n, x) ==
     /\ v_pc_state[n].state = _PC_TM_COMMITTED
     /\ v_pc_state[n].xid = x
+    /\ _ALLRMAtState(v_tm_rm_collection[n][x], v_tm_state[n][x].rm_id, {_RM_COMMITTED})
     /\ v_tm_state' = [v_tm_state EXCEPT ![n][x].state = _TM_COMMITTED]
     /\ v_pc_state' = [v_pc_state EXCEPT ![n] = [state |-> _PC_INVALID]]
-    /\ LET m == Message(n, n, M_D_TM_COMMITED, [xid |-> x])
+    /\ LET m == Message(n, n, M_D_DTM_TESTING, [_m \in {M_D_TM_COMMITED} |-> x])
            a0 == ActionSeqSetupAll
-           a1 == ActionCheckState(n)
-           a2 == Action(ActionInput, m) 
-       IN SetAction(__action__, a0, a1 \o a2, ENABLE_ACTION)
+           a2 == Action(ActionInternal, m) 
+       IN SetAction(__action__, a0, a2, ENABLE_ACTION)
     /\ UNCHANGED <<
         v_tm_rm_collection,
         v_rm_state, 
@@ -628,7 +645,7 @@ RMAbort(n, x) ==
     /\ v_pc_state[n].state = _PC_INVALID
     /\ v_rm_state[n][x].state = _RM_RUNNING
     /\ v_rm_state' = [v_rm_state EXCEPT ![n][x].state = _RM_ABORTED]
-    /\ LET m == Message(n, n, M_D_RM_ABORT, [xid |-> x])
+    /\ LET m == Message(n, n, M_D_DTM_TESTING, [_m \in {M_D_RM_ABORT} |-> x])
            a0 == ActionSeqSetupAll
            a1 == ActionCheckState(n)
            a2 == Action(ActionInput, m) 
@@ -637,16 +654,17 @@ RMAbort(n, x) ==
 
 RMReceivePrepare(n, x, m) == 
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ m.name = M_TM_PREPARE
+    /\ m.name = M_TM_MSG
     /\ m.dest = n
     /\ m.payload.xid = x
+    /\ M_TM_PREPARE \in DOMAIN m.payload.msg
     /\  (\/ ( /\ v_rm_state[n][x].state \in {_RM_RUNNING, _RM_PREPARED, _RM_COMMITTED}
                 /\ (IF v_rm_state[n][x].state \in {_RM_INVALID, _RM_RUNNING} THEN
-                        v_rm_state' = [v_rm_state EXCEPT ![n][x] = [state |-> _RM_PREPARED, rm_id |-> m.payload.rm_id]]
+                        v_rm_state' = [v_rm_state EXCEPT ![n][x] = [state |-> _RM_PREPARED, rm_id |-> m.payload.msg[M_TM_PREPARE].rm_id]]
                     ELSE 
                         UNCHANGED <<v_rm_state>>
                     )
-                /\ LET msg == Message(n, m.source, M_RM_PREPARE_RESP, [xid|-> x, success |-> TRUE])
+                /\ LET msg == Message(n, m.source, M_RM_MSG, [xid|-> x, msg |-> [_m \in {M_RM_PREPARE_RESP} |-> [success |-> TRUE, source_id |-> n]]])
                    IN /\ LET a0 == ActionSeqSetupAll
                                    a1 == ActionCheckState(n)
                                    a2 == Action(ActionInput, m) 
@@ -656,7 +674,7 @@ RMReceivePrepare(n, x, m) ==
                )
            \/ ( /\ v_rm_state[n][x].state \in  {_RM_ABORTED, _RM_INVALID}
                 /\ UNCHANGED <<v_rm_state>>
-                /\ LET msg == Message(n, m.source, M_RM_PREPARE_RESP, [xid|-> x, success |-> FALSE])
+                /\ LET msg == Message(n, m.source, M_RM_MSG, [xid|-> x, msg |-> [_m \in {M_RM_PREPARE_RESP} |-> [success |-> FALSE, source_id |-> n]]])
                    IN /\ LET a0 == ActionSeqSetupAll
                                    a1 == ActionCheckState(n)
                                    a2 == Action(ActionInput, m)
@@ -670,15 +688,16 @@ RMReceivePrepare(n, x, m) ==
 
 RMReceiveCommit(n, x, m) == 
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ m.name = M_TM_COMMIT
+    /\ m.name = M_TM_MSG
     /\ m.dest = n
     /\ m.payload.xid = x
+    /\ M_TM_COMMIT \in DOMAIN m.payload.msg
     /\ v_rm_state[n][x].state \in {_RM_INVALID, _RM_PREPARED, _RM_COMMITTED}
     /\ IF v_rm_state[n][x].state = _RM_PREPARED THEN
             v_rm_state' = [v_rm_state EXCEPT ![n][x].state = _RM_COMMITTED]
        ELSE 
             UNCHANGED <<v_rm_state>>
-    /\ LET msg == Message(n, m.source, M_RM_COMMITTED_ACK, [xid |-> x])
+    /\ LET msg == Message(n, m.source, M_RM_MSG, [xid |-> x, msg |-> [_m \in {M_RM_COMMITTED_ACK} |-> n]])
        IN /\ LET a0 == ActionSeqSetupAll
                        a1 == ActionCheckState(n)
                        a2 == Action(ActionInput, m)
@@ -689,15 +708,16 @@ RMReceiveCommit(n, x, m) ==
 
 RMReceiveAbort(n, x, m) == 
     /\ v_pc_state[n].state = _PC_INVALID
-    /\ m.name = M_TM_ABORT
+    /\ m.name = M_TM_MSG
     /\ m.dest = n
     /\ m.payload.xid = x
+    /\ M_TM_ABORT \in DOMAIN m.payload.msg
     /\ v_rm_state[n][x].state \in {_RM_INVALID, _RM_RUNNING, _RM_PREPARED, _RM_ABORTED}
     /\ IF v_rm_state[n][x].state \in {_RM_PREPARED, _RM_RUNNING} THEN
             v_rm_state' = [v_rm_state EXCEPT ![n][x].state = _RM_ABORTED]
        ELSE
             UNCHANGED <<v_rm_state>>
-    /\ LET msg == Message(n, m.source, M_RM_ABORTED_ACK, [xid |-> x])
+    /\ LET msg == Message(n, m.source, M_RM_MSG, [xid |-> x, msg |-> [_m \in {M_RM_ABORTED_ACK} |-> n]])
        IN /\ LET a0 == ActionSeqSetupAll
                        a1 == ActionCheckState(n)
                        a2 == Action(ActionInput, m)
@@ -761,44 +781,46 @@ Restart(n) ==
         ]
      /\ LET a0 == ActionSeqSetupAll
             a1 == ActionCheckState(n)
-            m == Message(n, n, M_D_RESTART, {})
+            m == Message(n, n, M_D_RESTART, n)
             a2 == Action(ActionSetup, m)
         IN SetAction(__action__, a0, a1 \o a2, ENABLE_ACTION)
      /\ UNCHANGED <<v_pc_state, v_message>>
                                 
 Next == 
-    \E n \in NODE_ID, x \in XID: 
-       \/( /\(  \/ TxBegin(n, x)
-                \/ \E _rm_id \in NODE_ID:
-                    TxAccess(n, x, _rm_id)
-                \/ TMPrepare(n, x)
-                \/ RMAbort(n, x)
-                \/ TMAborted(n, x)
-                \/ TMCommitted(n, x) 
-                \/ TMSendAbort(n, x)  
-                \/ TMSendCommit(n, x)
-                \/ \E m \in v_message: 
-                       (\/ TMReceivePrepared(n, x, m)
-                        \/ TMReceiveCommittedACK(n, x, m)
-                        \/ TMReceiveAbortedACK(n, x, m)
-                        \/ TMReceivePrepareAbort(n, x, m)
-                        \/ RMReceivePrepare(n, x, m)
-                        \/ RMReceiveCommit(n, x, m) 
-                        \/ RMReceiveAbort(n, x, m)
-                       )
-            )
-           /\ UNCHANGED <<vars_limit>>
-         )
-        \/ (/\ v_limit_timeout + 1 <= LIMIT_TIMEOUT
-            /\ TMTimeout(n, x)
-            /\ v_limit_timeout' = v_limit_timeout + 1
-            /\ UNCHANGED <<v_limit_restart>>
-           )
-        \/ (/\ v_limit_restart + 1 <= LIMIT_RESTART
-            /\ Restart(n)
-            /\ v_limit_restart' = v_limit_restart + 1
-            /\ UNCHANGED <<v_limit_timeout>>
-           )
+     /\(\E n \in NODE_ID, x \in XID: 
+           \/( /\(  \/ TxBegin(n, x)
+                    \/ \E _rm_id \in NODE_ID:
+                        TxAccess(n, x, _rm_id)
+                    \/ TMPrepare(n, x)
+                    \/ RMAbort(n, x)
+                    \/ TMAborted(n, x)
+                    \/ TMCommitted(n, x) 
+                    \/ TMSendAbort(n, x)  
+                    \/ TMSendCommit(n, x)
+                    \/ \E m \in v_message: 
+                           (\/ TMReceivePrepared(n, x, m)
+                            \/ TMReceiveCommittedACK(n, x, m)
+                            \/ TMReceiveAbortedACK(n, x, m)
+                            \/ TMReceivePrepareAbort(n, x, m)
+                            \/ RMReceivePrepare(n, x, m)
+                            \/ RMReceiveCommit(n, x, m) 
+                            \/ RMReceiveAbort(n, x, m)
+                           )
+                )
+               /\ UNCHANGED <<vars_limit>>
+             )
+            \/ (/\ v_limit_timeout + 1 <= LIMIT_TIMEOUT
+                /\ TMTimeout(n, x)
+                /\ v_limit_timeout' = v_limit_timeout + 1
+                /\ UNCHANGED <<v_limit_restart>>
+               )
+            \/ (/\ v_limit_restart + 1 <= LIMIT_RESTART
+                /\ Restart(n)
+                /\ v_limit_restart' = v_limit_restart + 1
+                /\ UNCHANGED <<v_limit_timeout>>
+               )
+        )
+     /\ ENABLE_ACTION => __action__.i = __action__'.p  
 
 
     
