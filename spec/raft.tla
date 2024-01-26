@@ -885,7 +885,7 @@ HandleApplySnapshotReq(_node_id, message) ==
            actions0 == ActionSeqSetupAll
            actions1 == ActionCheckState(_node_id)
            term_context == _UpdateTerm(_node_id, payload.term)
-       IN  /\ (IF payload.term = v_current_term[_node_id] THEN
+       IN  /\ (IF payload.term = term_context.current_term THEN
                  ( /\ IF /\ payload.snapshot.index >= LastLogIndex(v_log[_node_id], v_snapshot[_node_id])
                          /\ payload.snapshot.index > v_commit_index[_node_id]
                       THEN
@@ -893,7 +893,7 @@ HandleApplySnapshotReq(_node_id, message) ==
                         /\ v_log' = [v_log EXCEPT ![_node_id] = <<>> ]
                       ELSE
                         UNCHANGED <<v_snapshot, v_log>>
-                   /\ LET resp_payload ==  [source_nid |-> _node_id, term |-> v_current_term[_node_id], id |-> payload.id, iter |-> <<>>]
+                   /\ LET resp_payload ==  [source_nid |-> _node_id, term |-> term_context.current_term, id |-> payload.id, iter |-> <<>>]
                           resp == Message(_node_id, from_node_id, ApplyResp, resp_payload)  
                           actions3 == Action(ActionOutput, resp)
                           actions2 == Action(ActionInput, message)
