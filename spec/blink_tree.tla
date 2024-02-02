@@ -1,6 +1,6 @@
 ------------------------ MODULE blink_tree ------------------------
 
-EXTENDS Naturals, FiniteSets, TLC, action, StateDB
+EXTENDS SequencesExt, Naturals, FiniteSets, TLC, action, StateDB
 
 CONSTANTS KEY_INIT
 CONSTANTS KEY_OPER
@@ -96,6 +96,34 @@ D_UPDATE_RESULT == "UPDATE_RESULT"
 D_SPLIT_PAGE == "SPLIT_PAGE"
 D_SEARCH_TOP_DOWN == "SEARCH_TOP_DOWN"
 
+\* Return the minimum value from a set, or undefined if the set is empty.
+Min(s) == CHOOSE x \in s : \A y \in s : x <= y
+\* Return the maximum value from a set, or undefined if the set is empty.
+Max(s) == CHOOSE x \in s : \A y \in s : x >= y
+
+RECURSIVE __SeqRemoveIndex(_, _, _)
+
+
+__SeqRemoveIndex(_seq_in, _seq_out, index) ==
+    IF Cardinality(index) = 0 THEN
+        _seq_out
+    ELSE
+         LET min_index == Min(index)
+         IN _seq_out \o <<_seq_in[min_index]>>
+
+
+_SeqSelectAllInSeq(seq, Test(_)) ==
+  (*************************************************************************)
+  (* Selects the index of the first element such that Test(seq[i]) is true *)
+  (* Equals 0 if Test(seq[i]) is FALSE for all elements.                   *)
+  (*************************************************************************)
+  LET I == { i \in 1..Len(seq) : Test(seq[i]) }
+  IN I
+  
+_SeqRemoveMatch(_seq, _test(_)) ==
+    LET index == _SeqSelectAllInSeq(_seq, _test)
+    IN __SeqRemoveIndex(_seq,<<>>,  index)
+    
 _HalfCeiling(_n) ==
     LET v == _n \div 2
     IN 
@@ -350,10 +378,6 @@ Init ==
 
 
 
-\* Return the minimum value from a set, or undefined if the set is empty.
-Min(s) == CHOOSE x \in s : \A y \in s : x <= y
-\* Return the maximum value from a set, or undefined if the set is empty.
-Max(s) == CHOOSE x \in s : \A y \in s : x >= y
 
 (*
                                     Latch Requested
@@ -404,7 +428,16 @@ _PopFirst(
         <<>>
     ELSE
         SubSeq(_command_seq, 2, Len(_command_seq))
-            
+
+
+_CommandExcluded(_cmd_seq, _cmd_type_set, _page_id_set) ==
+    [
+        i \in DOMAIN _cmd_seq |-> 
+            /\ _cmd_seq[i].command_type \in _cmd_type_set
+            /\ _cmd_seq[i].page_id \in _page_id_set
+    ]
+    
+             
 _LatchCapatible(
     _latch_existing, 
     _latch_request
@@ -439,8 +472,10 @@ _PopLastLevel(_stack) ==
     ELSE
         LET last_depth == _stack[Len(_stack)].depth
             index == CHOOSE i \in 1..Len(_stack): 
-                        \A j \in 1..i - 1:
+                        /\ \A j \in 1..i - 1:
                             _stack[j].depth < last_depth
+                        /\ \A k \in i .. Len(_stack):
+                            _stack[k].depth = last_depth
         IN SubSeq(_stack, 1, index - 1)
 
 
@@ -851,10 +886,11 @@ DoWriteSlot(_s) ==
                             <<cmd>> \o 
                             <<_LatchReleaseCommand(page_id, WL)>> \o
                             _PopFirst(v_command[_s])] 
-                 /\ UNCHANGED <<v_stack, __action__>>
+                 /\ UNCHANGED <<__action__>>
              ELSE
-               /\ v_stack' = [v_stack EXCEPT ![_s] = v_stack[_s] \o << [depth |-> v_depth[_s], page_id |-> page_id]>>]
-               /\ IF next_page_id = NULL THEN \* exactly in this page
+
+               \*/\ v_stack' = [v_stack EXCEPT ![_s] = v_stack[_s] \o << [depth |-> v_depth[_s], page_id |-> page_id]>>]
+                 IF next_page_id = NULL THEN \* exactly in this page
                     CASE cmd_type = C_DELETE_SLOT -> (
                         /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_DELETE_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
                         /\ UNCHANGED <<__action__>>
@@ -882,7 +918,8 @@ DoWriteSlot(_s) ==
                         /\ v_command' = [v_command EXCEPT ![_s] = 
                               <<[cmd EXCEPT !.page_id = next_page_id]>> \o _PopFirst(v_command[_s])] 
                         /\ UNCHANGED <<__action__>>
-     /\ UNCHANGED <<v_latch, v_page, v_operation, v_depth, v_root_id, v_tree_level>>
+
+     /\ UNCHANGED <<v_latch, v_stack, v_page, v_operation, v_depth, v_root_id, v_tree_level>>
 
 
 LatchAcquire(_s) ==
@@ -930,7 +967,7 @@ InsertSlotGut(_s) ==
                         /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_SPLIT_PAGE] >> \o _PopFirst(v_command[_s])]
                         /\ UNCHANGED <<v_page>>
                    ELSE  IF insert_failed THEN
-                            /\ page.level > 0 => <<"Insert Slot Gut Error">>
+                            /\ page.level > 0 => <<"Insert Slot Gut Error", page, _s>>
                             /\ v_command' = [v_command EXCEPT ![_s] = _PopFirst(v_command[_s])]
                             /\ UNCHANGED <<v_page>>
                          ELSE
@@ -1045,14 +1082,14 @@ DeleteSlotGut(_s) ==
                      LET a == _ActionDeleteResult(_s,  page_id, index, page.slot[index].key /= key)
                      IN SetAction(__action__, _ActionSetup, a, ENABLE_ACTION)
                 ELSE
-                     /\ <<"DeleteSlotGut error, no such slot", slot>>
-                     /\ UNCHANGED <<__action__>> 
+                     /\ page.slot[index].key /= key => <<"DeleteSlotGut error, no such slot", slot, page, _s>>
+                     /\ UNCHANGED <<__action__>>
      /\ UNCHANGED <<v_latch, v_stack, v_operation, v_depth, v_root_id, v_tree_level>>
 
 _ConsolidateTwoPage(_left, _right, _to_delete_index) == 
     LET left_page1 == _DeleteFromPage(_left, _to_delete_index)
         half_size == _HalfCeiling(FAN_OUT_NUM)
-        move_size == half_size - Len(left_page1.slot)
+        move_size == Min({half_size - Len(left_page1.slot), Len(_right.slot)})
         right_page == [_right EXCEPT !.slot = SubSeq(_right.slot, move_size + 1, Len(_right.slot))]
         left_page2 == [left_page1 EXCEPT !.slot = left_page1.slot \o IF Len(_right.slot) = 0 THEN <<>> ELSE SubSeq(_right.slot, 1, move_size)] 
     IN [left_page |-> left_page2, right_page |-> right_page]
@@ -1089,10 +1126,17 @@ ConsolidatePage(_s) ==
            page == v_page[page_id]
        IN IF page.right_id = NULL THEN (
               LET page_new == _DeleteFromPage(page, index)
-              IN  /\ v_page' = [i \in ((DOMAIN v_page) \ {page_id}) |-> v_page[i]]      
+              IN  /\ v_page' = [
+                                    i \in (DOMAIN v_page) |->  
+                                        IF i = page_id THEN 
+                                            page_new
+                                        ELSE
+                                            v_page[i]
+                               ]      
                   /\  IF /\ Len(page_new.slot) = 1
                           /\ page_new.level + 1 = v_tree_level
                           /\ page_new.page_id = v_root_id 
+                          
                       THEN
                           /\ v_root_id' = page_new.slot[1].page_id
                           /\ v_tree_level' = v_tree_level - 1    
@@ -1100,7 +1144,8 @@ ConsolidatePage(_s) ==
                                 <<_LatchAcquireCommand(page_id, ND)>> \o
                                 <<[command_type |-> C_DELETE_PAGE, page_id |-> page_id]>> \o
                                 <<_LatchReleaseCommand(page_id, ND)>> \o
-                                _PopFirst(v_command[_s])] 
+                                _SeqRemoveMatch(_PopFirst(v_command[_s]),   
+                                        LAMBDA c : c.page_id = page_id)] 
                       ELSE
                           /\ UNCHANGED <<v_root_id, v_tree_level>>
                           /\ v_command' = [v_command EXCEPT ![_s] = _PopFirst(v_command[_s])]
@@ -1218,12 +1263,14 @@ SplitPage(_s) ==
            slot_split == _SplitSlot(page.slot)
            slot_lower == slot_split.lower
            slot_upper == slot_split.upper
-           right_page == [                    
+           right_page == [ 
+                    page_id |-> right_page_id,                   
                     level |-> page.level,
                     right_id |-> page.right_id, 
                     slot |-> slot_upper
                     ]
            left_page == [
+                    page_id |-> page.page_id,
                     level |-> page.level,
                     right_id |-> right_page_id,
                     slot |-> slot_lower
@@ -1286,7 +1333,7 @@ SplitPage(_s) ==
                                    ELSE 
                                       LET index == _SearchKey(right_page.slot, inserted_slot.key)
                                          _right_page == _InsertIntoPage(right_page, index, inserted_slot)
-                                      IN [left_page |-> _right_page, right_page |-> right_page]
+                                      IN [left_page |-> left_page, right_page |-> _right_page]
                       IN
                       /\ v_page' = [
                                         id \in (DOMAIN v_page) \cup {right_page_id} \cup root_id_set |->
@@ -1450,8 +1497,6 @@ Delete(_s, _k) ==
 
 RECURSIVE _DedupOp(_, _)
 
-ToSet(_seq) ==
-    {_seq[i] : i \in DOMAIN _seq}
 
 _DedupOp( _in, _out) ==
     IF Cardinality(_in) = 0 THEN
