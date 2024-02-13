@@ -170,9 +170,13 @@ _KeyLess(key1, key2) ==
         key1 < key2
     )
 
+
 _KeyGreat(key1, key2) ==
     _KeyLess(key2, key1)
 
+_KeyLessEqual(key1, key2) ==
+    ~_KeyGreat(key1, key2)
+    
 _KeyEqual(key1, key2) ==
     /\ ~_KeyLess(key1, key2)
     /\ ~_KeyLess(key2, key1)
@@ -547,7 +551,7 @@ _UpdateTreeLevelCommand(_page_id, _level) ==
                
 \* search the index I, where:
 \*      the first index _slot[i] >= _k  
-_SearchKey(_slot_seq, _key) ==    
+__SearchKey(_slot_seq, _key, _choose_max_if_more_than_one) ==    
     CASE Len(_slot_seq) = 0 -> (
         0
     )
@@ -577,10 +581,27 @@ _SearchKey(_slot_seq, _key) ==
            [] Cardinality(set) = 0 -> 
              0
            [] OTHER -> {
-                <<"_SearchKey error, more than one item", set, _slot_seq, _key>>
+                IF _choose_max_if_more_than_one THEN
+                    Max(set)
+                ELSE
+                    Min(set)
            }
      )
 
+_SearchKey(_slot_seq, _key) ==
+    __SearchKey(_slot_seq, _key, TRUE)
+
+_SearchSlot(_slot_seq, _slot) ==
+    IF Len(_slot_seq) = 0 THEN
+        0
+    ELSE
+        IF ~ \E i \in 1..Len(_slot_seq):
+            _slot_seq[i] = _slot 
+        THEN
+                0
+        ELSE
+            CHOOSE i \in 1..Len(_slot_seq): _slot_seq[i] = _slot
+                
 _TestSearchKey ==
     LET slot == <<[key |-> 3], [key |-> 4], [key |-> 4], [key |-> 6], [key |-> 8]>>
         slot2 == <<>>
@@ -594,17 +615,17 @@ _TestSearchKey ==
         /\ 1 = _SearchKey(slot3, 1) 
 
 \* search the next in the same depth
-_PageRightLink(_page, _key) ==
-        CASE /\ _HighKey(_page) /= NULL 
-             /\ (/\ _HighKey(_page) /= KEY_MAX 
-                 /\ _key /= KEY_MAX
-                 /\ _HighKey(_page) < _key) -> (
-            _page.right_id
-        )
-        [] OTHER -> (
-            NULL
-        )
-    
+_PageRightLink(_page, _key) == 
+    CASE Len(_page.slot) = 0 -> ( \*empty page, search right sibling
+        _page.right_id
+    ) 
+    [] _KeyLess(_HighKey(_page), _key) -> ( \*high key < searched key
+        _page.right_id
+    )
+    [] OTHER -> (
+        NULL
+    )
+
 _NonLeafRightOrChild(_page, _key) ==
     CASE  _PageRightLink(_page, _key) /= NULL -> (
         _PageRightLink(_page, _key)
@@ -784,7 +805,7 @@ SearchPageTopDown(_s) ==
     /\ LET cmd == _First(v_command[_s])
            page_id == cmd.page_id
            key == cmd.key
-           mode == IF /\ cmd.current_level = 1 \* the child is leaf page
+           mode == IF /\ cmd.current_level = 0 \* the leaf page
                       /\ v_operation[_s].operation \in OP_WRITE
                    THEN WL ELSE RL
            current_level == cmd.current_level
@@ -807,10 +828,10 @@ SearchPageTopDown(_s) ==
                         current_depth == v_depth[_s] + inc_depth 
                     IN 
                     IF next_page_id /= NULL THEN
-                        (LET next_mode == 
+                        (LET next_mode ==  
                                 IF /\ ~is_sibling 
                                    /\ page.level = 1 
-                                   /\ v_operation[_s].operation \in OP_WRITE
+                                   /\ v_operation[_s].operation \in OP_WRITE \* the child is leaf page
                                 THEN WL ELSE RL
                         IN
                             /\ v_stack' = [v_stack EXCEPT ![_s] = v_stack[_s] \o << [depth |-> v_depth[_s], page_id |-> page_id]>>]
@@ -865,7 +886,7 @@ SearchParent(_s) ==
                 /\ UNCHANGED <<v_stack, v_depth>>
            ) ELSE (
               LET page == v_page[page_id]
-              IN IF cmd.level + 1 < cmd.current_level THEN \* not a leaf node
+              IN IF cmd.level + 1 < cmd.current_level THEN \* not this level, search next level
                     LET next_page_id == _NonLeafRightOrChild(page, key)
                         is_sibling == next_page_id /= NULL /\ next_page_id = page.right_id
                         inc_depth == IF is_sibling THEN 0 ELSE 1
@@ -1014,7 +1035,7 @@ DoWriteSlot(_s) ==
            slot == cmd.slot
            key == slot.key
            page == v_page[page_id]
-           next_page_id == _PageRightLink(page, key)
+           
        IN /\ IF ~_LatchHold(v_latch, _s, WL, page_id) THEN
                  LET release_read == IF _LatchHold(v_latch, _s, RL, page_id) THEN 
                                         <<_LatchReleaseCommand(page_id, RL)>> 
@@ -1028,36 +1049,44 @@ DoWriteSlot(_s) ==
                             _PopFirst(v_command[_s])] 
                  /\ UNCHANGED <<__action__>>
              ELSE
-
-               \*/\ v_stack' = [v_stack EXCEPT ![_s] = v_stack[_s] \o << [depth |-> v_depth[_s], page_id |-> page_id]>>]
-                 IF next_page_id = NULL THEN \* exactly in this page
-                    CASE cmd_type = C_DELETE_SLOT -> (
-                        /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_DELETE_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
-                        /\ UNCHANGED <<__action__>>
-                    )
-                    [] cmd_type = C_INSERT_SLOT -> (
-                        /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_INSERT_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
-                        /\ UNCHANGED <<__action__>>
-                    )
-                    [] cmd_type = C_UPDATE_SLOT -> (
-                        /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_UPDATE_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
-                        /\ UNCHANGED <<__action__>>
-                    )
-                  ELSE \* search next page
-                    IF ~_LatchHold(v_latch, _s, AI, next_page_id) THEN
-                        /\ v_command' = [v_command EXCEPT ![_s] = 
-                            <<_LatchAcquireCommand(next_page_id, AI)>> \o
-                            <<_LatchAcquireCommand(next_page_id, WL)>> \o
-                            <<_LatchReleaseCommand(page_id, WL)>> \o
-                            <<_LatchReleaseCommand(next_page_id, AI)>> \o
-                            <<[cmd EXCEPT !.page_id = next_page_id]>> \o 
-                            <<_LatchReleaseCommand(next_page_id, WL)>> \o
-                             _PopFirst(v_command[_s])] 
-                        /\ UNCHANGED <<__action__>>
-                    ELSE 
-                        /\ v_command' = [v_command EXCEPT ![_s] = 
-                              <<[cmd EXCEPT !.page_id = next_page_id]>> \o _PopFirst(v_command[_s])] 
-                        /\ UNCHANGED <<__action__>>
+                LET _next_page_id == _PageRightLink(page, key)
+                    next_page_id == 
+                        IF /\ _next_page_id = NULL
+                            /\ cmd_type = C_UPDATE_SLOT
+                            /\ cmd_type = C_DELETE_SLOT
+                            /\ _SearchSlot(page.slot, slot) /= 0 
+                        THEN \* for update and delete, the slot must exist
+                            page.right_id
+                        ELSE
+                            _next_page_id
+                IN   IF next_page_id = NULL THEN \* exactly in this page
+                        CASE cmd_type = C_DELETE_SLOT -> (
+                            /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_DELETE_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
+                            /\ UNCHANGED <<__action__>>
+                        )
+                        [] cmd_type = C_INSERT_SLOT -> (
+                            /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_INSERT_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
+                            /\ UNCHANGED <<__action__>>
+                        )
+                        [] cmd_type = C_UPDATE_SLOT -> (
+                            /\ v_command' = [v_command EXCEPT ![_s] = <<[cmd EXCEPT !.command_type = C_UPDATE_SLOT_GUT] >> \o _PopFirst(v_command[_s])]
+                            /\ UNCHANGED <<__action__>>
+                        )
+                      ELSE \* search next page
+                        IF ~_LatchHold(v_latch, _s, AI, next_page_id) THEN
+                            /\ v_command' = [v_command EXCEPT ![_s] = 
+                                <<_LatchAcquireCommand(next_page_id, AI)>> \o
+                                <<_LatchAcquireCommand(next_page_id, WL)>> \o
+                                <<_LatchReleaseCommand(page_id, WL)>> \o
+                                <<_LatchReleaseCommand(next_page_id, AI)>> \o
+                                <<[cmd EXCEPT !.page_id = next_page_id]>> \o 
+                                <<_LatchReleaseCommand(next_page_id, WL)>> \o
+                                 _PopFirst(v_command[_s])] 
+                            /\ UNCHANGED <<__action__>>
+                        ELSE 
+                            /\ v_command' = [v_command EXCEPT ![_s] = 
+                                  <<[cmd EXCEPT !.page_id = next_page_id]>> \o _PopFirst(v_command[_s])] 
+                            /\ UNCHANGED <<__action__>>
 
      /\ UNCHANGED <<v_latch, v_stack, v_page, v_operation, v_depth, v_root_id, v_tree_level, v_root_seq>>
 
@@ -1089,7 +1118,7 @@ LatchRelease(_s) ==
     /\ UNCHANGED <<v_page, v_root_id, v_stack, v_depth, v_operation, v_tree_level, v_root_seq>>
 
 
-__UpdateParent(_page, _page_new,  _parent_id, _update_key, _command) ==
+__UpdateParent(_page, _page_new,  _parent_id, _command) ==
     LET page_id == _page.page_id
         parent_is_null == _parent_id = NULL
     IN
@@ -1097,8 +1126,10 @@ __UpdateParent(_page, _page_new,  _parent_id, _update_key, _command) ==
             [page |-> _page_new, command |-> <<
                   _LatchAcquireCommand(page_id, PM),
                   _LatchReleaseCommand(page_id, WL),
-                  [command_type |-> C_VISIT_PARENT, page_id |-> _parent_id, level |-> _page.level, slot |-> [page_id |-> page_id, key |-> _update_key]],
-                  [command_type |-> C_UPDATE_SLOT, no_parent |-> parent_is_null,  page_id |-> _parent_id, slot |-> [page_id |-> page_id, key |-> _update_key ],
+                  [command_type |-> C_VISIT_PARENT, page_id |-> _parent_id, level |-> _page.level, 
+                            slot |-> [page_id |-> page_id, key |-> _HighKey(_page)]],
+                  [command_type |-> C_UPDATE_SLOT, no_parent |-> parent_is_null,  page_id |-> _parent_id, 
+                            slot |-> [page_id |-> page_id, key |-> _HighKey(_page) ],
                             slot_new |-> [page_id |-> page_id, key |-> _HighKey(_page_new)]],
                   _LatchReleaseCommand(page_id, PM)
                 >> \o _PopFirst(_command)]
@@ -1109,21 +1140,21 @@ __InsertSlotResult(_page, _index, _slot, _stack, _command) ==
     LET page_new == _InsertIntoPage(_page, _index, _slot)
         parent_id == _ParentLevelPageId(_stack)
         page_id == _page.page_id
-    IN __UpdateParent(_page, page_new, parent_id, _slot.key, _command)
+    IN __UpdateParent(_page, page_new, parent_id,  _command)
 
 
 _UpdateSlotResult(_page, _index, _slot, _stack, _command) ==
     LET page_new == _UpdatePage(_page, _index, _slot)
         parent_id == _ParentLevelPageId(_stack)
         page_id == _page.page_id
-    IN __UpdateParent(_page, page_new, parent_id, _slot.key, _command)
+    IN __UpdateParent(_page, page_new, parent_id, _command)
             
                      
 __DeleteSlotResult(_page, _index,  _stack, _command) ==
     LET page_new == _DeleteFromPage(_page, _index)
         parent_id == _ParentLevelPageId(_stack)
         page_id == _page.page_id
-    IN __UpdateParent(_page, page_new, parent_id, _page.slot[_index].key, _command)
+    IN __UpdateParent(_page, page_new, parent_id, _command)
 
             
 _InsertSlotResult(_page, _index, _slot, _stack, _command) ==
@@ -1132,8 +1163,6 @@ _InsertSlotResult(_page, _index, _slot, _stack, _command) ==
         
    ELSE  
         __InsertSlotResult(_page, _index, _slot, _stack, _command)
-            
-        
                         
 InsertSlotGut(_s) ==
     /\ Len(v_command[_s]) > 0
@@ -1144,12 +1173,13 @@ InsertSlotGut(_s) ==
            key == cmd.slot.key
            page == v_page[page_id]
            is_leaf == page.level = 0
-           duplicate == v_operation[_s].duplicate /\ is_leaf
-           index == _SearchKey(page.slot, key)
+           
        IN /\ ~_LatchHold(v_latch, _s, WL, page_id) => <<"InsertSlotGut error, not latched">>
           /\ _LatchHold(v_latch, _s, WL, page_id)
           /\ IF is_leaf THEN (
-                LET insert_failed ==
+                LET duplicate == v_operation[_s].duplicate /\ is_leaf
+                    index == _SearchKey(page.slot, key)
+                    insert_failed ==
                         \/ index = 0 
                         \/ (page.slot[index].key = key /\ ~duplicate)
                     a == _ActionInsertResult(_s,  page_id, index, ~insert_failed)
@@ -1164,15 +1194,15 @@ InsertSlotGut(_s) ==
                         IN /\ v_page' = [v_page EXCEPT ![page_id] = page_new]
                            /\ v_command' = [v_command EXCEPT ![_s] = command_new]
              ) ELSE (
-                  /\ Len(page.slot) = 0 => <<"InsertSlotGut error", _s, page, cmd>>
-                  /\(LET insert_failed == page.slot[index].key = key /\ ~duplicate
-                     IN /\ insert_failed => <<"Insert Slot Gut Error", page, _s>>
-                        /\ LET r == _InsertSlotResult(page, index, slot, v_stack[_s], v_command[_s])
-                           IN /\ v_page' = [v_page EXCEPT ![page_id] = r.page]
-                              /\ v_command' = [v_command EXCEPT ![_s] = r.command]
-                    )
-                 /\ UNCHANGED <<__action__>>
-
+                LET _index == _SearchKey(page.slot, key)
+                    index == IF _index = 0 THEN
+                        1
+                    ELSE 
+                        IF page.slot[_index].key = key THEN _index ELSE _index + 1
+                    r == _InsertSlotResult(page, index, slot, v_stack[_s], v_command[_s])
+                IN /\ v_page' = [v_page EXCEPT ![page_id] = r.page]
+                   /\ v_command' = [v_command EXCEPT ![_s] = r.command]
+                   /\ UNCHANGED <<__action__>>
                 )
           /\ UNCHANGED <<v_latch, v_stack, v_operation, v_depth, v_root_id, v_tree_level, v_root_seq>>
 
@@ -1186,11 +1216,11 @@ UpdateSlotGut(_s) ==
            slot_new == cmd.slot_new
            key == cmd.slot.key
            page == v_page[page_id]
-           index == _SearchKey(page.slot, key)
        IN /\ ~_LatchHold(v_latch, _s, WL, page_id) => <<"UpdateSlotGut error, not latched">>
           /\ _LatchHold(v_latch, _s, WL, page_id)
           /\ IF page.level = 0 THEN  ( \* leaf page
-                LET update_ok == index > 0 /\ page.slot[index].key = key
+                LET index == _SearchKey(page.slot, key)
+                    update_ok == index > 0 /\ page.slot[index].key = key
                 IN IF update_ok THEN
                      /\ LET a == _ActionUpdateResult(_s,  page_id, index, TRUE)
                         IN SetAction(__action__, _ActionSetup, a, ENABLE_ACTION)
@@ -1203,14 +1233,15 @@ UpdateSlotGut(_s) ==
                      /\  v_command' = [v_command EXCEPT ![_s] =  _PopFirst(v_command[_s])]
                      /\ UNCHANGED <<v_page>>
              ) ELSE (
-                /\ index = 0 => <<"UpdateSlotGut error", index, page, key>>
-                /\ page.slot[index].key /= key => <<"UpdateSlotGut error, no such slot", slot>>
-                /\ LET r == _UpdateSlotResult(page, index, slot_new, v_stack[_s], v_command[_s])
-                            page_new == r.page
-                            command_new == r.command
-                   IN /\ v_page' = [v_page EXCEPT ![page_id] = page_new]
-                      /\ v_command' = [v_command EXCEPT ![_s] = command_new]
-                /\ UNCHANGED <<__action__>>
+                LET index == _SearchSlot(page.slot, slot)
+                IN  /\ index = 0 => <<"UpdateSlotGut error", index, page, key>>
+                    /\ page.slot[index].key /= key => <<"UpdateSlotGut error, no such slot", slot>>
+                    /\ LET r == _UpdateSlotResult(page, index, slot_new, v_stack[_s], v_command[_s])
+                                page_new == r.page
+                                command_new == r.command
+                       IN /\ v_page' = [v_page EXCEPT ![page_id] = page_new]
+                          /\ v_command' = [v_command EXCEPT ![_s] = command_new]
+                    /\ UNCHANGED <<__action__>>
              )
     /\ UNCHANGED <<v_latch, v_stack, v_operation, v_depth, v_root_id, v_tree_level, v_root_seq>>
 
@@ -1231,11 +1262,12 @@ DeleteSlotGut(_s) ==
            page_id == cmd.page_id
            slot == cmd.slot
            key == cmd.slot.key
-           page == v_page[page_id]
-           index == _SearchKey(page.slot, key)
+           page == v_page[page_id]  
        IN /\ ~_LatchHold(v_latch, _s, WL, page_id) => <<"DeleteSlotGut error, not latched">>
           /\ _LatchHold(v_latch, _s, WL, page_id)
           /\ IF page.level = 0 THEN  ( \* leaf page
+              LET index == _SearchKey(page.slot, key)
+              IN
                 IF (index = 0 \/ page.slot[index].key /= key) THEN
                     /\ LET a == _ActionDeleteResult(_s,  page_id, index, FALSE)
                        IN SetAction(__action__, _ActionSetup, a, ENABLE_ACTION)
@@ -1249,12 +1281,13 @@ DeleteSlotGut(_s) ==
                            /\ v_command' = [v_command EXCEPT ![_s] = r.command]
              
              ) ELSE (
-                /\ (index = 0 \/ page.slot[index].key /= key) => 
-                        <<"DeleteSlotGut error, cannot find key", index, page, key>>
-                /\ LET r == _DeleteSlotResult(page, index, v_stack[_s], v_command[_s])
-                    IN /\ v_page' = [v_page EXCEPT ![page_id] = r.page]
-                       /\ v_command' = [v_command EXCEPT ![_s] = r.command]
-                /\ UNCHANGED <<__action__>>
+                LET index == _SearchSlot(page.slot, slot)
+                IN /\ (index = 0 \/ page.slot[index].key /= key) => 
+                            <<"DeleteSlotGut error, cannot find key", index, page, key>>
+                   /\ LET r == _DeleteSlotResult(page, index, v_stack[_s], v_command[_s])
+                        IN /\ v_page' = [v_page EXCEPT ![page_id] = r.page]
+                           /\ v_command' = [v_command EXCEPT ![_s] = r.command]
+                   /\ UNCHANGED <<__action__>>
              )
      /\ UNCHANGED <<v_latch, v_stack, v_operation, v_depth, v_root_id, v_tree_level, v_root_seq>>
 
@@ -1307,7 +1340,7 @@ ConsolidatePage(_s) ==
               IN IF Len(page_new.slot) = 0 THEN (
                         /\ v_page' = [i \in ((DOMAIN v_page) \ {page_id}) |->   v_page[i] ]
                         /\ v_command' = [v_command EXCEPT ![_s] = cmd_seq_new] 
-                        /\ UNCHANGED <<v_root_id, v_tree_level>>
+                        /\ UNCHANGED <<v_root_id, v_tree_level, v_root_seq>>
                  ) ELSE (
                       /\ v_page' = [
                                 i \in (DOMAIN v_page) |->  
@@ -1323,11 +1356,12 @@ ConsolidatePage(_s) ==
                               
                           THEN
                               /\ v_root_id' = page_new.slot[1].page_id
-                              /\ v_tree_level' = v_tree_level - 1    
+                              /\ v_tree_level' = v_tree_level - 1   
+                              /\ v_root_seq' = v_root_seq + 1 
                               /\ v_command' = [v_command EXCEPT ![_s] = cmd_seq_new] 
                           ELSE
-                              /\ UNCHANGED <<v_root_id, v_tree_level>>
                               /\ v_command' = [v_command EXCEPT ![_s] = _PopFirst(v_command[_s])]   
+                              /\ UNCHANGED <<v_root_id, v_tree_level, v_root_seq>>
                    )
           ) ELSE (
               /\(CASE ~_LatchHold(v_latch, _s, WL, page_id) -> (
@@ -1444,10 +1478,10 @@ ConsolidatePage(_s) ==
                     "ConsolidatePage error, not possible"
                  )
                 )
-               /\ UNCHANGED <<v_root_id, v_tree_level>>
+               /\ UNCHANGED <<v_root_id, v_tree_level, v_root_seq>>
              )
        ) 
-       /\ UNCHANGED <<__action__, v_depth, v_latch, v_operation, v_stack, v_root_seq>>
+       /\ UNCHANGED <<__action__, v_depth, v_latch, v_operation, v_stack>>
                                         
 _GenNewPageId(_page_ids) == 
     CHOOSE id \in PAGE_ID: ~(id \in _page_ids)
@@ -1567,7 +1601,10 @@ SplitPage(_s) ==
                                                     page_id |-> id,
                                                     level |-> left_page.level + 1, 
                                                     right_id |-> NULL, 
-                                                    slot |-> <<[key |-> KEY_MAX, page_id |-> right_page_id]>>
+                                                    slot |-> <<
+                                                        [key |-> _HighKey(updated_page.left_page), page_id |-> left_page_id], 
+                                                        [key |-> _HighKey(updated_page.right_page), page_id |-> right_page_id]
+                                                      >>
                                                 ]
                                             )
                                             [] OTHER -> (
@@ -1587,16 +1624,21 @@ SplitPage(_s) ==
                                      ) \o 
                                     update_tree_level_cmd \o
                                     <<
-                                        [command_type |-> C_VISIT_PARENT, page_id |-> parent_id, level |-> page.level, slot |-> [page_id |-> left_page_id, key |-> _HighKey(page)]],
-                                        [command_type |-> C_INSERT_SLOT,page_id |-> parent_id, 
-                                            no_parent |-> parent_is_null,
-                                            slot |-> [page_id |-> left_page_id, key |-> _HighKey(updated_page.left_page)]],
-                                        [command_type |-> C_UPDATE_SLOT, page_id |-> parent_id, key |-> _HighKey(page), 
-                                            no_parent |-> parent_is_null,
-                                            slot |-> [page_id |-> left_page_id, key |-> _HighKey(page)],
-                                            slot_new |-> [page_id |-> right_page_id, key |-> _HighKey(updated_page.right_page)]
-                                        ]
-                                     >> \o
+                                        [command_type |-> C_VISIT_PARENT, page_id |-> parent_id, level |-> page.level, slot |-> [page_id |-> left_page_id, key |-> _HighKey(page)]]
+                                    >> \o
+                                    (IF update_root THEN \* root id already has the slot
+                                           <<>> 
+                                     ELSE         
+                                         <<[command_type |-> C_INSERT_SLOT,page_id |-> parent_id, 
+                                                no_parent |-> parent_is_null,
+                                                slot |-> [page_id |-> left_page_id, key |-> _HighKey(updated_page.left_page)]],
+                                           [command_type |-> C_UPDATE_SLOT, page_id |-> parent_id, key |-> _HighKey(page), 
+                                                no_parent |-> parent_is_null,
+                                                slot |-> [page_id |-> left_page_id, key |-> _HighKey(page)],
+                                                slot_new |-> [page_id |-> right_page_id, key |-> _HighKey(updated_page.right_page)]
+                                            ]
+                                         >> 
+                                     ) \o
                                      (IF latch_parent THEN
                                         <<_LatchReleaseCommand(parent_id, WL)>>
                                      ELSE
@@ -1684,7 +1726,7 @@ VisitParentPage(_s) ==
                               _LatchAcquireCommand(v_root_id, AI),
                               [
                                 command_type |-> C_SEARCH_PARENT, slot |-> slot, level |-> cmd.level, 
-                                current_level |-> v_tree_level, page_id |-> v_root_id
+                                current_level |-> v_tree_level - 1, page_id |-> v_root_id
                               ]
                             >> 
                             \o _PopFirst(v_command[_s])
@@ -1713,7 +1755,7 @@ _SearchKeyCommand(_k, _root_id, _tree_level, _root_seq, _is_root) ==
     ]
 
 _InitSearchCommand(_k, _root_id, _tree_level, _root_seq, _is_root, _is_write) ==
-    LET latch == IF _is_write /\  _tree_level = 1 THEN WL ELSE RL
+    LET latch == IF _is_write /\  _tree_level = 0 THEN WL ELSE RL
     IN
         <<
             _LatchAcquireCommand(v_root_id, AI), 
@@ -1725,7 +1767,7 @@ _InitSearchCommand(_k, _root_id, _tree_level, _root_seq, _is_root, _is_write) ==
         
 Search(_s, _k) ==
     /\ v_operation[_s].operation = NULL
-    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level, v_root_seq, TRUE, FALSE)]
+    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level - 1, v_root_seq, TRUE, FALSE)]
     /\ v_depth' = [v_depth EXCEPT ![_s] = 0]
     /\ v_operation' = [v_operation EXCEPT ![_s] = [operation |-> OP_SEARCH_KEY, key |-> _k, root_seq |-> v_root_seq]]
     /\ LET a ==  Action(ActionInput, MessageLocal(_s, OP_SEARCH_KEY, [key |-> _k]))
@@ -1734,7 +1776,7 @@ Search(_s, _k) ==
 
 Insert(_s, _k, _dup) ==
     /\ v_operation[_s].operation = NULL
-    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level, v_root_seq, TRUE, TRUE)]
+    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level - 1, v_root_seq, TRUE, TRUE)]
     /\ v_depth' = [v_depth EXCEPT ![_s] = 0]
     /\ v_operation' = [v_operation EXCEPT ![_s] = [operation |-> OP_INSERT_KEY, key |-> _k, duplicate |-> _dup, root_seq |-> v_root_seq]]
     /\ LET a == Action(ActionInput, MessageLocal(_s, OP_INSERT_KEY, [key |-> _k]))
@@ -1743,7 +1785,7 @@ Insert(_s, _k, _dup) ==
 
 Update(_s, _k) ==
     /\ v_operation[_s].operation = NULL
-    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level, v_root_seq, TRUE, TRUE)]
+    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level - 1, v_root_seq, TRUE, TRUE)]
     /\ v_depth' = [v_depth EXCEPT ![_s] = 0]
     /\ v_operation' = [v_operation EXCEPT ![_s] = [operation |-> OP_UPDATE_KEY, key |-> _k, root_seq |-> v_root_seq]]
     /\ LET a == Action(ActionInput, MessageLocal(_s, OP_UPDATE_KEY, [key |-> _k])) 
@@ -1752,7 +1794,7 @@ Update(_s, _k) ==
 
 Delete(_s, _k) ==
     /\ v_operation[_s].operation = NULL
-    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level, v_root_seq, TRUE, TRUE)]
+    /\ v_command' = [v_command EXCEPT ![_s] = _InitSearchCommand(_k, v_root_id, v_tree_level - 1, v_root_seq, TRUE, TRUE)]
     /\ v_depth' = [v_depth EXCEPT ![_s] = 0]
     /\ v_operation' = [v_operation EXCEPT ![_s] = [operation |-> OP_DELETE_KEY, key |-> _k, root_seq |-> v_root_seq]]
     /\ LET a ==  Action(ActionInput, MessageLocal(_s, OP_DELETE_KEY, [key |-> _k]))
@@ -1775,11 +1817,11 @@ ReCheckRoot(_s) ==
             IN  /\ search_key.command_type /= C_SEARCH_KEY => "CheckRoot error"
                 /\ LET is_write == v_operation[_s].operation \in OP_WRITE
                        mode1 == IF /\ is_write
-                                   /\ search_key.current_level = 1
+                                   /\ search_key.current_level = 0 \* is leaf node
                                 THEN WL ELSE RL
                    IN v_command' = [v_command EXCEPT ![_s] = 
                                 <<_LatchReleaseCommand(page_id, mode1)>> \o
-                                _InitSearchCommand(v_operation[_s].key, v_root_id, v_tree_level, v_root_seq, TRUE, is_write) \o
+                                _InitSearchCommand(v_operation[_s].key, v_root_id, v_tree_level - 1, v_root_seq, TRUE, is_write) \o
                                 _PopFirst(_PopFirst(v_command[_s]))
                             ]
     /\ UNCHANGED <<v_page, v_latch, v_operation, v_root_id, v_stack, v_depth, v_tree_level, v_root_seq, __action__>>
@@ -1849,7 +1891,7 @@ _PageOK(_id, _v_page, _print) ==
        /\ \A i \in 1..Len(_page.slot):
             /\ LET key_increase_only == 
                     \A j \in 1..Len(_page.slot):
-                        i < j => _KeyLess(_page.slot[i].key, _page.slot[j].key)
+                        i < j => ~_KeyGreat(_page.slot[i].key, _page.slot[j].key)
                IN /\ ~key_increase_only /\ _print => PrintT(<<"page slot key increase only", _page>>)
                   /\ key_increase_only
             /\ LET larger_than_child_key == 
@@ -1868,14 +1910,14 @@ _PageOK(_id, _v_page, _print) ==
                                     )
                         )
                 IN /\ ~larger_than_child_key /\ _print => 
-                        PrintT(<<"page larger_than child keys", _page, v_page[_page.slot[i].page_id]>>)
+                        PrintT(<<"page larger than child keys", _page, v_page[_page.slot[i].page_id]>>)
                    /\ larger_than_child_key
             /\ LET less_than_right_key == 
                     _page.right_id /= NULL =>
                         (
                             LET right == v_page[_page.right_id]
                             IN \A j \in 1..Len(right.slot):
-                                _KeyLess(_page.slot[i].key, right.slot[j].key) 
+                                ~_KeyGreat(_page.slot[i].key, right.slot[j].key) 
                         )
                 IN /\ ~less_than_right_key /\ _print => 
                         PrintT(<<"page less than right keys", _page, v_page[_page.right_id]>>)
