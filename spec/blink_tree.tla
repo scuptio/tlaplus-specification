@@ -513,7 +513,16 @@ _ParentLevelPageId(_stack) ==
         NULL
     ELSE
         LET s == _PopLastLevel(_stack)
-        IN _stack[Len(s)].page_id
+        IN  IF Len(s) = 0 THEN
+                NULL
+            ELSE
+                \* choose the first index
+                LET _index == {
+                        _i \in 1..Len(s):
+                            _stack[Len(s)].depth = _stack[_i].depth
+                         }   
+                    index == Min(_index)
+                IN _stack[index].page_id 
 
 
 YES == "YES"
@@ -1130,7 +1139,7 @@ __UpdateParent(_page, _page_new,  _parent_id, _command) ==
                             slot |-> [page_id |-> page_id, key |-> _HighKey(_page)]],
                   [command_type |-> C_UPDATE_SLOT, no_parent |-> parent_is_null,  page_id |-> _parent_id, 
                             slot |-> [page_id |-> page_id, key |-> _HighKey(_page) ],
-                            slot_new |-> [page_id |-> page_id, key |-> _HighKey(_page_new)]],
+                  slot_new |-> [page_id |-> page_id, key |-> _HighKey(_page_new)]],
                   _LatchReleaseCommand(page_id, PM)
                 >> \o _PopFirst(_command)]
         ELSE
@@ -1159,7 +1168,16 @@ __DeleteSlotResult(_page, _index,  _stack, _command) ==
             
 _InsertSlotResult(_page, _index, _slot, _stack, _command) ==
    IF /\ Len(_page.slot) = FAN_OUT_NUM  THEN
-        [page |-> _page, command |-> <<[_First(_command) EXCEPT !.command_type = C_SPLIT_PAGE] >> \o _PopFirst(_command)]
+        [page |-> _page, command |-> 
+            <<
+                [
+                    command_type |-> C_SPLIT_PAGE,
+                    page_id |-> _First(_command).page_id,
+                    slot |-> _First(_command).slot,
+                    right_page_id |-> NULL,
+                    no_parent |-> IF "no_parent" \in DOMAIN _First(_command) THEN _First(_command).no_parent ELSE FALSE
+                ] 
+            >> \o _PopFirst(_command)]
         
    ELSE  
         __InsertSlotResult(_page, _index, _slot, _stack, _command)
@@ -1198,7 +1216,7 @@ InsertSlotGut(_s) ==
                     index == IF _index = 0 THEN
                         1
                     ELSE 
-                        IF page.slot[_index].key = key THEN _index ELSE _index + 1
+                        _index
                     r == _InsertSlotResult(page, index, slot, v_stack[_s], v_command[_s])
                 IN /\ v_page' = [v_page EXCEPT ![page_id] = r.page]
                    /\ v_command' = [v_command EXCEPT ![_s] = r.command]
@@ -1466,7 +1484,7 @@ ConsolidatePage(_s) ==
                                     _LatchReleaseCommand(page.right_id, WL),
                                     [command_type |-> C_VISIT_PARENT, page_id |-> parent_id, level |-> page.level, slot |-> [page_id |-> page_id, key |-> _HighKey(page)]],
                                     [command_type |-> C_UPDATE_SLOT, page_id |-> parent_id, key |-> _HighKey(page), 
-                                          slot |-> [page_id |-> page_id, key |-> _HighKey(page)],
+                                          slot |-> [page_id |-> page_id, key |-> _HighKey(page)], 
                                           slot_new |-> [page_id |-> page_id, key |-> _HighKey(page_left1)]
                                     ],
                                     _LatchReleaseCommand(page_id, PM),
@@ -1504,7 +1522,10 @@ SplitPage(_s) ==
     /\ LET command == _First(v_command[_s])
            left_page_id == command.page_id
            page == v_page[left_page_id]
-           right_page_id == _GenNewPageId(DOMAIN v_page)
+           right_page_id == 
+                IF command.right_page_id /= NULL THEN 
+                    command.right_page_id
+                ELSE _GenNewPageId(DOMAIN v_page)
            inserted_slot == command.slot
            slot_split == _SplitSlot(page.slot)
            slot_lower == slot_split.lower
@@ -1534,10 +1555,20 @@ SplitPage(_s) ==
                 /\ ~_LatchHold(v_latch, _s, WL, right_page_id) -> (
                  /\ v_command' = [v_command EXCEPT ![_s] = <<
                          _LatchAcquireCommand(right_page_id, WL)>> \o
-                         <<command>> \o
+                         <<[command EXCEPT !.right_page_id = right_page_id]>> \o
                          <<_LatchReleaseCommand(right_page_id, WL)>> \o
                          _PopFirst(v_command[_s])]
-                 /\ UNCHANGED <<v_page, v_root_id, v_tree_level, __action__>>
+                 /\ IF command.right_page_id = NULL THEN
+                        v_page' = [
+                                     id \in (DOMAIN v_page) \cup {right_page_id} |->
+                                        IF id = right_page_id THEN
+                                            right_page
+                                        ELSE
+                                            v_page[id]      
+                                   ]
+                    ELSE 
+                        UNCHANGED <<v_page>>
+                 /\ UNCHANGED <<v_root_id, v_tree_level, __action__>>
              )
              [] /\ _LatchHold(v_latch, _s, WL, left_page_id)
                 /\ _LatchHold(v_latch, _s, WL, right_page_id)
@@ -1636,7 +1667,7 @@ SplitPage(_s) ==
                                                 no_parent |-> parent_is_null,
                                                 slot |-> [page_id |-> left_page_id, key |-> _HighKey(page)],
                                                 slot_new |-> [page_id |-> right_page_id, key |-> _HighKey(updated_page.right_page)]
-                                            ]
+                                                                                       ]
                                          >> 
                                      ) \o
                                      (IF latch_parent THEN
@@ -1871,16 +1902,6 @@ Next ==
         \/ DeletePage(_s)
         \/ UpdateRoot(_s)
         \/ SearchParent(_s)
-        
-FinalAllLatchReleased ==
-    ~(ENABLED Next)  => 
-    (
-        ~(\A l \in DOMAIN v_latch:
-            v_latch[l] = {}
-         ) => 
-            /\ PrintT(<<"NEXT", Next>>)
-            /\ FALSE
-    ) 
 
 _PageOK(_id, _v_page, _print) ==
     LET _page == _v_page[_id]
@@ -1934,6 +1955,19 @@ WellFormedTree ==
     \A id \in DOMAIN v_page:
         _PageOK(id, v_page, TRUE)
         
+
+        
+FinalAllLatchReleased ==
+    ~(ENABLED Next)  => 
+    (
+        /\(~(\A l \in DOMAIN v_latch:
+              v_latch[l] = {}
+            ) => 
+                /\ PrintT(<<"NEXT", Next>>)
+                /\ FALSE
+          )
+        /\ WellFormedTree
+    ) 
 
      
 \* The specification must start with the initial state and transition according to Next.
