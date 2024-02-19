@@ -1769,8 +1769,9 @@ VisitParentPage(_s) ==
     /\ LET cmd == _First(v_command[_s])
            slot == cmd.slot
            page_id == cmd.page_id
-       IN IF page_id = NULL THEN
-              IF v_root_seq /= v_operation[_s].root_seq THEN
+       IN IF /\ page_id = NULL 
+             /\ v_root_seq /= v_operation[_s].root_seq THEN 
+                 \* the root id has been changed, re-search from the root
                  /\ v_command' = [v_command EXCEPT ![_s] =  
                             <<
                               _LatchAcquireCommand(v_root_id, AI),
@@ -1781,13 +1782,9 @@ VisitParentPage(_s) ==
                             >> 
                             \o _PopFirst(v_command[_s])
                         ]
-                 /\ v_operation' = [v_operation EXCEPT ![_s].root_seq = v_root_seq]
+                 /\ v_operation' = [v_operation EXCEPT ![_s].root_seq = v_root_seq] \* reset the root
                  /\ v_depth' = [v_depth EXCEPT ![_s] = 0]
                  /\ v_stack' = [v_stack EXCEPT ![_s] = <<>>]
-              ELSE
-                 /\ _LevelUp(v_depth, v_stack, _s)
-                 /\ v_command' = [v_command EXCEPT ![_s] =  _PopFirst(v_command[_s])]
-                 /\ UNCHANGED <<v_operation>>
           ELSE
             /\ _LevelUp(v_depth, v_stack, _s)
             /\ v_command' = [v_command EXCEPT ![_s] =  _PopFirst(v_command[_s])]
