@@ -1490,11 +1490,13 @@ ConsolidatePage(_s) ==
                                 /\ v_command' = [v_command EXCEPT ![_s] = <<
                                     _LatchReleaseCommand(page_id, WL),
                                     _LatchReleaseCommand(page.right_id, WL),
+                                    _LatchAcquireCommand(page_id_right, ND),  \* latch ND forbid AI
                                     [command_type |-> C_VISIT_PARENT, page_id |-> parent_id, level |-> page.level, slot |-> [page_id |-> page_id, key |-> _HighKey(page)]],
                                     [command_type |-> C_UPDATE_SLOT, page_id |-> parent_id, key |-> _HighKey(page), 
                                           slot |-> [page_id |-> page_id, key |-> _HighKey(page)], 
                                           slot_new |-> [page_id |-> page_id, key |-> _HighKey(page_left1)]
                                     ],
+                                    _LatchReleaseCommand(page_id_right, ND), \* allow AI when updated high key
                                     _LatchReleaseCommand(page_id, PM),
                                     _LatchReleaseCommand(page_id_right, PM)
                                  >> \o consolidate_right_page \o _PopFirst(v_command[_s])]
