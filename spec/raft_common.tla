@@ -269,13 +269,6 @@ InitHistoryWithElection(
         /\ _history = <<>>
         )
 
-RECURSIVE ChooseFromSet(_, _)
-ChooseFromSet(_set, _num) ==
-    IF _num = 0 \/ _set = {} THEN
-          {}
-    ELSE
-        LET item == CHOOSE _item \in _set: TRUE
-        IN {item} \cup ChooseFromSet(_set \ {item}, _num - 1)
 
 LastLogIndex(_log, _snapshot) == 
     IF Len(_log) = 0 THEN 
@@ -493,51 +486,7 @@ AllValuesLEIndex(_log, _snapshot, index, _value_set) ==
             \/ \E i_v \in _snapshot.value:
                  i_v.value = v
     }
-    
-RECURSIVE _LogSeq(_, _, _)
 
-_LogSeq(_terms, _values, _seq) ==
-    IF Cardinality(_terms) = 0 \/ Cardinality(_values) = 0 THEN 
-        _seq
-    ELSE
-        LET v == CHOOSE v \in _values: TRUE
-            t == Min(_terms)
-        IN _LogSeq(_terms \ {t}, _values \ {v}, _seq \o <<[term |-> t, value |->  v]>>)
-
-RECURSIVE _ToValidLogSeqSet(_, _)
-_ToValidLogSeqSet(_values_terms, _log_seq_set) == 
-    IF _values_terms = {} THEN
-        _log_seq_set \cup {<<>>}
-    ELSE
-        LET vt == CHOOSE vt \in _values_terms : TRUE
-            values == vt.values
-            terms == vt.terms
-            log_seq == _LogSeq(terms, values, <<>>)
-        IN _ToValidLogSeqSet(_values_terms \ {vt}, _log_seq_set \cup {log_seq})
-
-
-_ValidLogSeqSet(_max_log_size, _max_term, _value_set) ==
-    LET values == SUBSET _value_set
-        terms == SUBSET (1..Min({_max_term, Cardinality(values)}))
-        values_terms == {
-                x \in [
-                    terms : terms,
-                    values : values
-                ]:
-                /\ Cardinality(x.terms) <= _max_log_size
-                /\ Cardinality(x.values) <= _max_log_size
-                /\ Cardinality(x.terms) >= 1
-                /\ Cardinality(x.values) >= 1
-                /\ Cardinality(x.terms) <= Cardinality(x.values)
-            }
-        log_seq_set == _ToValidLogSeqSet(values_terms, {})
-    IN log_seq_set
-
-RECURSIVE _OneIdSet(_)
-_OneIdSet(_node_ids) ==
-    {
-        s \in SUBSET _node_ids : Cardinality(s) <= 1 
-    }
 
 -------------------------------------------------
 \* Invariants
@@ -861,62 +810,7 @@ InitSaftyStateTrival(
         _max_term 
         )
         
-    
-InitSaftyState(
-    _state,
-    _current_term,
-    _log,
-    _snapshot,
-    _voted_for,
-    _node_ids,
-    _value_set,
-    _max_term,
-    _max_entries,
-    _max_snapshot_index
-    ) ==
-    /\ _state \in  [_node_ids -> StateSet]
-    /\ _current_term \in [_node_ids -> 1.._max_term ]
-    /\ _log \in [_node_ids -> _ValidLogSeqSet(_max_entries, _max_term, _value_set) ]
-    /\ _voted_for \in [_node_ids -> _node_ids \cup {INVALID_NODE_ID}]
-    /\ _snapshot \in [_node_ids -> {
-                        x \in [term : 0.._max_term, index : 0.._max_snapshot_index] : 
-                            \/ (x.term = 0 /\ x.index = 0)
-                            \/ (x.term # 0 /\ x.index # 0) 
-                            }]
-    /\ BaseStateOK(
-        _state,
-        _current_term,
-        _log,
-        _snapshot,
-        _voted_for,
-        _node_ids,
-        _value_set,
-        _max_term 
-        )
 
-
-InitSaftyStateDefault(
-    _state,
-    _current_term,
-    _log,
-    _snapshot,
-    _voted_for,
-    _node_ids,
-    _value_set,
-    _max_term
-    ) == 
-    InitSaftyState(
-        _state,
-        _current_term,
-        _log,
-        _snapshot,
-        _voted_for,
-        _node_ids,
-        _value_set,
-        _max_term,
-        1,
-        1
-    )
     
 
  
