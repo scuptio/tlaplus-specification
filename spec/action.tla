@@ -62,56 +62,29 @@ _NodeChangedVariable(
     _node_ids
 ) ==
     LET changed == {x \in DOMAIN _old_var: _old_var[x][_id] # _new_var[x][_id]}
-    IN  [x \in changed |-> _new_var[x][_id]]    
+    IN  [x \in changed |-> _new_var[x][_id]]
 
-
-RECURSIVE ActionFromChangedVars(_, _, _, _, _)
-
-ActionFromChangedVars(
-    _old_var, 
-    _new_var,
-    _node_ids,
-    _action_name,
-    _action_type
+__ActionSeqOfNode(
+    _handle_node_id(_),
+    _node_id,
+    _action_type,
+    _action_name
 ) ==
-    IF _node_ids = {} THEN
-        {}
-    ELSE 
-        LET id == CHOOSE x \in _node_ids : TRUE
-            changed_var == _NodeChangedVariable(_old_var, _new_var, id, _node_ids)
-            action_set == { [
-                        source |-> id,
-                        dest |-> id,
-                        name |-> _action_name,
-                        type |-> _action_type, 
-                        payload |-> changed_var
-            ] }
-        IN action_set \cup ActionFromChangedVars(
-                _old_var, _new_var, _node_ids \ {id}, 
-                _action_type, _action_name)
-            
-
-RECURSIVE __ActionSeqOfEachNodeHandle(_, _, _, _)
-
+    LET payload == _handle_node_id(_node_id)
+        msg == Message(_node_id, _node_id, _action_name, payload)
+        action == Action(_action_type, msg)
+    IN action
+                
 __ActionSeqOfEachNodeHandle(
     _handle_node_id(_),
     _node_ids,
     _action_type,
     _action_name
 ) ==
-    IF _node_ids = {} THEN
-        <<>>
-    ELSE 
-        LET id == CHOOSE x \in _node_ids : TRUE
-            payload == _handle_node_id(id)
-            msg == Message(id, id, _action_name, payload)
-            action == Action(_action_type, msg)
-        IN __ActionSeqOfEachNodeHandle(
-                _handle_node_id,
-                _node_ids \ {id}, 
-                _action_type, 
-                _action_name
-                ) \o action
+    LET f == [id \in _node_ids |-> __ActionSeqOfNode(_handle_node_id, id, _action_type, _action_name)]
+        s == {f[id] : id \in DOMAIN f}
+    IN SetToSeq(s)
+
 
 ActionsFromHandle(
     _handle_node_id(_),
@@ -126,7 +99,18 @@ ActionsFromHandle(
         _action_name)
 
 
-RECURSIVE __ActionSeqOfEachNodeHandleEx(_, _, _, _, _)
+__ActionSeqOfNodeEx(
+    _handle_node_id(_, _),
+    _node_id,
+    _action_type,
+    _action_name,
+    _context
+) ==
+    LET payload == _handle_node_id(_node_id, _context)
+        msg == Message(_node_id, _node_id, _action_name, payload)
+        action == Action(_action_type, msg)
+    IN action
+
 
 __ActionSeqOfEachNodeHandleEx(
     _handle_node_id(_, _),
@@ -135,20 +119,18 @@ __ActionSeqOfEachNodeHandleEx(
     _action_name,
     _context
 ) ==
-    IF _node_ids = {} THEN
-        <<>>
-    ELSE 
-        LET id == CHOOSE x \in _node_ids : TRUE
-            payload == _handle_node_id(id, _context)
-            msg == Message(id, id, _action_name, payload)
-            action == Action(_action_type, msg)
-        IN __ActionSeqOfEachNodeHandleEx(
+    LET f == [id \in _node_ids |-> 
+            __ActionSeqOfNodeEx(
                 _handle_node_id,
-                _node_ids \ {id}, 
-                _action_type, 
+                id,
+                _action_type,
                 _action_name,
                 _context
-                ) \o action
+                )]
+
+        s == {f[id] : id \in DOMAIN f}
+    IN SetToSeq(s)
+
 
 ActionsFromHandleContext(
     _handle_node_id(_, _),

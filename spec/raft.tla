@@ -168,20 +168,6 @@ _RaftVariables(_nid) ==
         next_index |-> v_next_index[_nid]
     ]
 
-(*
-DisableVoteNode ==
-    IF DISABLE_VOTE_NODE_NUM = 0 THEN
-        {}
-    ELSE
-        ChooseFromSet(NODE_ID, DISABLE_VOTE_NODE_NUM)
-
-
-DisableReplicateNode ==
-    IF DISABLE_REPLICATE_NODE_NUM = 0 THEN
-        {}
-    ELSE
-        ChooseFromSet(NODE_ID, DISABLE_REPLICATE_NODE_NUM)
-*)
                
 ActionCheckState(_node_id) ==
     ActionsFromHandle(
@@ -299,9 +285,6 @@ Init ==
         )
 
 
-                                               
-RECURSIVE AppendRequestMessages(_, _, _, _, _, _, _, _, _)
-
 LastEntryIndex(_log, _next_index, i, j) ==
     Min({
         IF Len(_log[i]) > 0 THEN
@@ -384,8 +367,57 @@ MessageAppendRequest(
                             commit_index    |-> _commit_index
                         ]          
     IN Message(_source, _dest, AppendRequest, payload)
-    
-                    
+
+
+_AppendRequestMessages(
+    _log, 
+    _next_index, 
+    _commit_index, 
+    _current_term,
+    _snapshot,
+    _append_max,
+    _source, 
+    _dest
+) ==
+    LET prev_log_index == PrevLogIndex(_next_index, _source, _dest)
+    IN IF prev_log_index < _snapshot[_source].index THEN (
+            LET apply_message == MessageApplySnapshot(
+                _source, 
+                _dest,
+                _current_term[_source],
+                _snapshot[_source])
+            IN apply_message
+        )
+        ELSE (
+            LET prev_log_term == LogTerm(
+                        _log,
+                        _snapshot,
+                        _source, 
+                        prev_log_index)
+               \* Send up to APPEND_ENTRIES_MAX entries, constrained by the end of the r_log[i].
+                entries == LogEntries(
+                        _log,
+                        _snapshot,
+                        _source, 
+                        prev_log_index + 1, 
+                        _append_max)
+                commit_index == _commit_index[_source]
+                append_message == MessageAppendRequest(
+                        _source,                          \*_source,
+                        _dest,                          \*_dest,
+                        _current_term[_source],           \* _term,
+                        prev_log_index,             \* _prev_log_index,
+                        prev_log_term,              \* _prev_log_term,
+                        entries,                    \* _log_entries,
+                        commit_index,                      \* _commit_index,
+                        _log[_source],                    \* _leader_log,
+                        _snapshot[_source],               \* _leader_snapshot,
+                        CHECK_SAFETY     \* _aux_payload
+                    )
+             IN append_message
+          ) \* end else
+         
+                                   
 AppendRequestMessages(
     _log, 
     _next_index, 
@@ -393,61 +425,23 @@ AppendRequestMessages(
     _current_term,
     _snapshot,
     _append_max,
-    i, 
+    _source, 
     servers, msgs
 ) ==
-    IF servers = {} \/ servers = {i} THEN 
-        msgs
-    ELSE LET 
-            j == CHOOSE j \in servers : i /= j
-            prev_log_index == PrevLogIndex(_next_index, i, j)
-            message == IF prev_log_index < _snapshot[i].index THEN (
-                    LET apply_snapshot_message == MessageApplySnapshot(
-                        i, 
-                        j,
-                        _current_term[i],
-                        _snapshot[i])
-                    IN apply_snapshot_message
-                )
-                ELSE (
-                    LET prev_log_term == LogTerm(
-                                _log,
-                                _snapshot,
-                                i, 
-                                prev_log_index)
-                       \* Send up to APPEND_ENTRIES_MAX entries, constrained by the end of the r_log[i].
-                        entries == LogEntries(
-                                _log,
-                                _snapshot,
-                                i, 
-                                prev_log_index + 1, 
-                                _append_max)
-                        commit_index == _commit_index[i]
-                        append_message == MessageAppendRequest(
-                                i,                          \*_source,
-                                j,                          \*_dest,
-                                _current_term[i],           \* _term,
-                                prev_log_index,             \* _prev_log_index,
-                                prev_log_term,              \* _prev_log_term,
-                                entries,                    \* _log_entries,
-                                commit_index,                      \* _commit_index,
-                                _log[i],                    \* _leader_log,
-                                _snapshot[i],               \* _leader_snapshot,
-                                CHECK_SAFETY     \* _aux_payload
-                            )
-                     IN append_message
-                  ) \* end else
-          IN AppendRequestMessages(
-                _log, _next_index, 
-                _commit_index,
-                _current_term,
-                _snapshot,
-                 _append_max,
-                i, 
-                servers \ {j}, 
-                msgs \cup {message}
-            )
-
+    LET f == [dest \in servers \ {_source} |-> 
+                _AppendRequestMessages(
+                    _log, 
+                    _next_index, 
+                    _commit_index, 
+                    _current_term,
+                    _snapshot,
+                    _append_max,
+                    _source, 
+                    dest
+                    )
+             ]
+    IN {f[id] : id \in DOMAIN f}
+    
 
 UpdateAckedValues(
     _log, _snapshot, index

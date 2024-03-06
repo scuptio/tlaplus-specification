@@ -81,7 +81,6 @@ C_LATCH_RELEASE == "LATCH_RELEASE"
 C_INSERT_SLOT == "INSERT_SLOT"
 C_SEARCH_KEY_LEAF == "SEARCH_KEY_LEAF"
 C_VISIT_PARENT == "VISIT_PARENT"
-C_UPDATE_SLOT_PAGE_ID == "UPDATE_SLOT_PAGE_ID"
 C_CHECK_ROOT == "CHECK_ROOT"
 C_UPDATE_TREE_LEVEL == "UPDATE_TREE_LEVEL"
 C_SEARCH_PARENT == "SEARCH_PARENT"
@@ -1477,29 +1476,10 @@ ConsolidatePage(_s) ==
                                         >>
                                    ]
     
-                         ) ELSE (    
-                            LET consolidate_right_page ==
-                                IF Len(page_right1.slot) < _HalfCeiling(FAN_OUT_NUM) THEN
-                                    <<[command_type |-> C_CONSOLIDATE_PAGE, page_id |-> page_id_right, index |-> 0]>>
-                                ELSE
-                                    <<>>
-                            IN  
-                                /\ v_page' = [v_page EXCEPT 
-                                    ![page_id] = page_left1, 
-                                    ![page_id_right] = page_right1]
-                                /\ v_command' = [v_command EXCEPT ![_s] = <<
-                                    _LatchReleaseCommand(page_id, WL),
-                                    _LatchReleaseCommand(page.right_id, WL),
-                                    _LatchAcquireCommand(page_id_right, ND),  \* latch ND forbid AI
-                                    [command_type |-> C_VISIT_PARENT, page_id |-> parent_id, level |-> page.level, slot |-> [page_id |-> page_id, key |-> _HighKey(page)]],
-                                    [command_type |-> C_UPDATE_SLOT, page_id |-> parent_id, key |-> _HighKey(page), 
-                                          slot |-> [page_id |-> page_id, key |-> _HighKey(page)], 
-                                          slot_new |-> [page_id |-> page_id, key |-> _HighKey(page_left1)]
-                                    ],
-                                    _LatchReleaseCommand(page_id_right, ND), \* allow AI when updated high key
-                                    _LatchReleaseCommand(page_id, PM),
-                                    _LatchReleaseCommand(page_id_right, PM)
-                                 >> \o consolidate_right_page \o _PopFirst(v_command[_s])]
+                         ) ELSE (   
+                            LET _del_r == __DeleteSlotResult(page, index, v_stack[_s], v_command[_s])
+                            IN  /\ v_page' = [v_page EXCEPT ![page_id] = _del_r.page]
+                                /\ v_command' = [v_command EXCEPT ![_s] = _del_r.command]
                          )
                  )
                  [] OTHER -> (
@@ -1883,15 +1863,7 @@ UpdateRoot(_s) ==
     /\ v_command' = [v_command EXCEPT ![_s] =  _PopFirst(v_command[_s])]
     /\ UNCHANGED <<v_page, v_latch, v_operation,  v_stack, v_depth,  __action__>>
         
-RECURSIVE _DedupOp(_, _)
 
-
-_DedupOp( _in, _out) ==
-    IF Cardinality(_in) = 0 THEN
-        _out
-    ELSE     
-        LET i == CHOOSE i \in _in: TRUE
-        IN _DedupOp(_in \ {i}, {ToSet(i)} \cup _out)
                 
 Next == 
     \E _s \in SESSION:
@@ -1986,7 +1958,5 @@ FinalAllLatchReleased ==
      
 \* The specification must start with the initial state and transition according to Next.
 Spec == Init /\ [][Next]_variables
-
-
 
 =============================================================================
