@@ -3,7 +3,9 @@ EXTENDS action, Naturals, FiniteSets, Sequences, TLC
 
 ----
 
-CONSTANT INVALID_NODE_ID
+CONSTANT NULL
+
+INVALID_NODE_ID == NULL
 
 \* raft role states.
 Follower == "Follower"
@@ -24,6 +26,8 @@ PreVoteResponse == "PreVoteResp"
 ApplyReq == "ApplyReq"
 ApplyResp== "ApplyResp"
 
+UpdateConfigReq == "UpdateConfigReq"
+UpdateConfigResp == "UpdateConfigResp"
 
 __ActionInit == "DTMTesting::Setup"
 __ActionCheck == "DTMTesting::Check"
@@ -41,6 +45,10 @@ __ActionAdvanceCommitIndex == "DTMTesting::AdvanceCommitIndex"
 __ActionLogCompaction == "DTMTesting::LogCompaction"
 __ActionRestart == "DTMTesting::Restart"
 __ActionHandleApplySnapshotRequest == "DTMTesting::HandleApplyReq"
+__ActionSendUpdateConfig == "DTMTesting::SendUpdateConfig"
+__ActionUpdateConfigBegin == "DTMTesting::UpdateConfigBegin"
+__ActionUpdateConfigCommit == "DTMTesting::UpdateConfigCommit"
+
 
 ReceiveMessageAction(_var, m) ==
     LET action == Action(ActionInput, m)
@@ -384,9 +392,10 @@ LastLogTerm(_log, _snapshot) ==
 \* Used by PV and Vote
 
 TermLimit(_term, _max_term) ==
-    _term < _max_term
+    \/ _term < _max_term
+    \/ _max_term = 0
 
-
+\* if _max_term = 0 , then term is no limitation
 TermLE(_node_ids, _current_term, _max_term) ==
    TermLimit(_current_term[_node_ids], _max_term)
 
@@ -487,6 +496,11 @@ AllValuesLEIndex(_log, _snapshot, index, _value_set) ==
                  i_v.value = v
     }
 
+
+
+Election(_history) ==
+    /\ LET index == {i \in 1..Len(_history): "election" \in DOMAIN _history[i]}
+       IN { _history[i].election : i \in index }
 
 -------------------------------------------------
 \* Invariants
@@ -590,9 +604,23 @@ MajorityCommit(
                         /\ consistency
                 )
 
-                           
+_CurrentNodeIdSet(
+    _config_committed,
+    _node_ids    
+) ==
+    LET node_has_latest_conf == 
+        CHOOSE i \in _node_ids: 
+            ~ \E j \in _node_ids:
+                (\/ _config_committed[j].term > _config_committed[i].term
+                 \/ (/\ _config_committed[j].term = _config_committed[i].term
+                     /\ _config_committed[j].version > _config_committed[i].version)
+                )
+        current_nodes == _config_committed[node_has_latest_conf].node  
+    IN current_nodes
+                        
 InvPrefixCommitted(
     _node_ids, 
+    _config_committed,
     _commit_index,
     _log,
     _snapshot
@@ -600,15 +628,16 @@ InvPrefixCommitted(
     \A _node_id \in _node_ids:
         _commit_index[_node_id] > 0 =>
             LET commit_index == _commit_index[_node_id]
+                current_nodes == _CurrentNodeIdSet(_config_committed, _node_ids)
                 majority_commit == MajorityCommit(
-                    _node_ids,
+                    current_nodes,
                     commit_index,
                     _log,
                     _snapshot,
                     FALSE)
             IN /\ ~majority_commit =>
                     MajorityCommit(
-                        _node_ids,
+                        current_nodes,
                         commit_index,
                         _log,
                         _snapshot,

@@ -167,20 +167,19 @@ ContinuousAction(
 
 
 InitAction(
-    _action_variable,
     _action_sequence1,
     _action_sequence2,
     _enable
 ) ==
     IF _enable THEN
-        _action_variable = [
-            p |-> _action_variable.i,
+        [
+            p |-> GetID,
             i |-> NextID,
             s |-> _action_sequence1,
             a |-> _action_sequence2 
         ]
     ELSE
-        _action_variable = [
+       [
             p |-> GetID,
             i |-> GetID,
             s |-> <<>>,
