@@ -295,21 +295,13 @@ LogAfterAppendEntries(
     _log,
     _recv_log_entries, 
     _prev_index,
-    _snapshot_last_index,
-    _reconfig_value
+    _snapshot_last_index
 ) ==
     LET _result == _LogEntriesAppendResult(_log,  _recv_log_entries, _prev_index, _snapshot_last_index)
         _index == _result.prev_index \* new prev_index
         _to_append_entries == _result.log_entries
         _seq_index_to_write == _result.seq_index_to_write \* index of _log sequence
-        _vi_reconfig == FirstCommandOf(_to_append_entries, _reconfig_value)
-        _vi_reconfig_log == FirstCommandOf(_log, _reconfig_value)
-        _entries == IF _vi_reconfig_log = {} THEN
-                        \* when there is a compation command value in log
-                        \* we must wait untill it commit and execute compation to append new log entries
-                        TruncateEntries(_to_append_entries, _vi_reconfig)
-                    ELSE <<>>
-        reconfig_vi == ValueIndexLessLimit(_vi_reconfig, Len(_entries))
+        _entries == _to_append_entries     
         _log_index == IF _result.truncate THEN
                             1.. Min({Len(_log), _seq_index_to_write + Len(_entries) - 1})      
                       ELSE 
@@ -348,8 +340,7 @@ LogAfterAppendEntries(
                                                 __dump.non_exist2
                                             ELSE  
                                                 _log[i]
-                            ]),
-                reconfig |-> reconfig_vi
+                            ])
            ]
 
 
@@ -366,8 +357,7 @@ HandleAcceptAppend(
     log_entries,
     _v_log,
     _v_snapshot,
-    _v_history,
-    _reconfig_value_set
+    _v_history
 ) ==
     CASE _v_snapshot.index > prev_log_index -> (
              [ append_result |-> APPEND_RESULT_STALE_INDEX ]
@@ -381,8 +371,7 @@ HandleAcceptAppend(
                             _v_log,
                             _entries,
                             prev_log_index, 
-                            snapshot_last_index, 
-                            _reconfig_value_set)
+                            snapshot_last_index)
             IN [
                     append_result |-> APPEND_RESULT_ACCEPT,
                     log |-> l.log,
@@ -398,7 +387,6 @@ HandleAppendLogInner(
     _v_current_term,
     _v_state,
     _v_history,
-    _reconfig_value_set,
     _leader_node_id,
     _prev_log_index,
     _prev_log_term,
@@ -425,7 +413,7 @@ HandleAppendLogInner(
          [] FollowerAcceptAppendLog(_v_current_term, _v_state,  _term, log_ok) ->
               HandleAcceptAppend(
                     _node_id,  _prev_log_index, _term, _log_entries, 
-                    _v_log, _v_snapshot, _v_history, _reconfig_value_set
+                    _v_log, _v_snapshot, _v_history
                 )
          [] OTHER -> (
               [
@@ -504,8 +492,7 @@ __TestLogAfterAppendEntries ==
                 <<[index |-> 1, term |-> 2,  value |-> 1]>>,
                 <<[index |-> 1, term |-> 2,  value |-> 1], [index |-> 2, term |-> 2,  value |-> 2]>>,
                 0,
-                0,
-                {}
+                0
                 )
         IN  /\ r.match_index = 2
             /\ Len(r.log) = 2
@@ -514,8 +501,7 @@ __TestLogAfterAppendEntries ==
                 <<[index |-> 1, term |-> 2,  value |-> 1]>>,
                 <<>>,
                 0,
-                0,
-                {}
+                0
                 )
         IN  /\ r.match_index = 0
             /\ Len(r.log) = 1
@@ -531,8 +517,7 @@ __TestLogAfterAppendEntries ==
                     [index |-> 2, term |-> 3,  value |-> 2]
                 >>,
                 0,
-                0,
-                {}
+                0
                 )
         IN  /\ r.match_index = 2
             /\ Len(r.log) = 2
@@ -545,8 +530,7 @@ __TestLogAfterAppendEntries ==
                     [index |-> 2, term |-> 2,  value |-> 2]
                 >>,
                 1,
-                1,
-                {}
+                1
                 )
         IN  /\ r.match_index = 2
             /\ Len(r.log) = 1    
