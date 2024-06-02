@@ -10,15 +10,23 @@ ActionSetup     ==  "S"
 ActionCheck     ==  "C"
 
 
+_Action(
+    _action_type, 
+    _payload
+) == 
+    [
+        t |-> _action_type,
+        p |-> _payload
+    ]
+    
     
 Action(
     _action_type, 
     _payload
 ) == 
-    <<[
-            t |-> _action_type,
-            p |-> _payload
-    ]>>
+    <<
+        _Action(_action_type, _payload)
+    >>
 
 
 Actions(
@@ -72,7 +80,7 @@ __ActionSeqOfNode(
 ) ==
     LET payload == _handle_node_id(_node_id)
         msg == Message(_node_id, _node_id, _action_name, payload)
-        action == Action(_action_type, msg)
+        action == _Action(_action_type, msg)
     IN action
                 
 __ActionSeqOfEachNodeHandle(
@@ -108,7 +116,7 @@ __ActionSeqOfNodeEx(
 ) ==
     LET payload == _handle_node_id(_node_id, _context)
         msg == Message(_node_id, _node_id, _action_name, payload)
-        action == Action(_action_type, msg)
+        action == _Action(_action_type, msg)
     IN action
 
 

@@ -1,7 +1,5 @@
 --------------------------------- MODULE raft ---------------------------------
 
-
-
 EXTENDS 
     action, 
     raft_common,
@@ -19,7 +17,8 @@ CONSTANT NODE_ID
 CONSTANT MAX_TERM
 CONSTANT CHECK_SAFETY
 CONSTANT ENABLE_ACTION
-CONSTANT DB_STATE_PATH
+CONSTANT DB_INIT_STATE_PATH
+CONSTANT DB_SAVE_STATE_PATH
 CONSTANT DB_ACTION_PATH
 CONSTANT APPEND_ENTRIES_MAX
 
@@ -33,29 +32,26 @@ CONSTANT CLIENT_REQUEST
 ----
 
 
-
-VARIABLE v_state
+VARIABLE v_role
 VARIABLE v_log
 VARIABLE v_voted_for
 VARIABLE v_snapshot
-VARIABLE v_vote_granted
 VARIABLE v_commit_index
-VARIABLE v_next_index
-VARIABLE v_match_index
 VARIABLE v_acked_value
 VARIABLE v_messages
 VARIABLE v_current_term
-VARIABLE v_config_committed
-VARIABLE v_config_new
-VARIABLE v_follower_config
-VARIABLE v_follower_term_cindex
+VARIABLE v_conf_committed
+VARIABLE v_conf_new
+VARIABLE v_follower_vote_granted
+VARIABLE v_follower_next_index
+VARIABLE v_follower_match_index
+VARIABLE v_follower_conf
+VARIABLE v_follower_term_commit_index
 
 VARIABLE v_history
 
 
-
 VARIABLE __action__
-
 VARIABLE v_cnt_limit
 
 
@@ -64,57 +60,57 @@ VARIABLE v_cnt_limit
 TERM_VALUE == Nat
 
 vars_config == <<
-    v_config_committed,
-    v_config_new,
-    v_follower_config,
-    v_follower_term_cindex
+    v_conf_committed,
+    v_conf_new,
+    v_follower_conf,
+    v_follower_term_commit_index
 >>
 
 vars_leader == <<
-    v_vote_granted,
-    v_next_index,
-    v_match_index,
-    v_follower_config,
-    v_follower_term_cindex
+    v_follower_vote_granted,
+    v_follower_next_index,
+    v_follower_match_index,
+    v_follower_conf,
+    v_follower_term_commit_index
 >>
 
 vars_control == <<v_cnt_limit>>
 
 vars == <<
-    v_state,
+    v_role,
     v_current_term,
     v_log, 
     v_voted_for,
     v_snapshot,
     v_commit_index,
-    v_next_index,
-    v_match_index,
-    v_vote_granted,
+    v_follower_next_index,
+    v_follower_match_index,
+    v_follower_vote_granted,
     v_messages,
     v_history,
     v_acked_value,  
-    v_config_committed,
-    v_config_new,
-    v_follower_config,
-    v_follower_term_cindex,  
+    v_conf_committed,
+    v_conf_new,
+    v_follower_conf,
+    v_follower_term_commit_index, 
     __action__,
     vars_control
 >>
 
 vars_view == <<
-    v_state,
+    v_role,
     v_current_term,
     v_log, 
     v_voted_for,
     v_snapshot,
     v_commit_index,
-    v_next_index,
-    v_match_index,
-    v_vote_granted,
-    v_config_committed,
-    v_config_new,
-    v_follower_config,
-    v_follower_term_cindex, 
+    v_follower_next_index,
+    v_follower_match_index,
+    v_follower_vote_granted,
+    v_conf_committed,
+    v_conf_new,
+    v_follower_conf,
+    v_follower_term_commit_index, 
     v_messages
 >>
 
@@ -127,11 +123,11 @@ vars_hard_state == <<
 
 vars_except_action_and_pc == <<
     vars_hard_state,
-    v_state,
+    v_role,
     v_commit_index,
-    v_next_index,
-    v_match_index,
-    v_vote_granted,
+    v_follower_next_index,
+    v_follower_match_index,
+    v_follower_vote_granted,
     v_messages,
     v_history,
     v_acked_value
@@ -139,33 +135,37 @@ vars_except_action_and_pc == <<
 
 vars_except_action == <<
     vars_hard_state,
-    v_state,
+    v_role,
     v_commit_index,
-    v_next_index,
-    v_match_index,
+    v_follower_next_index,
+    v_follower_match_index,
     v_acked_value,
-    v_vote_granted,
+    v_follower_vote_granted,
     v_messages,
     v_history
 >>
 
-vars_vote == <<v_vote_granted>>
-vars_replicate == <<v_commit_index, v_next_index, v_match_index, v_acked_value>>
+vars_vote == <<v_follower_vote_granted>>
+vars_replicate == <<v_commit_index, v_follower_next_index, v_follower_match_index, v_acked_value>>
 
 
 
         
 _RaftVariables(_nid) ==
     [
-        state |-> v_state[_nid],
+        role |-> v_role[_nid],
         current_term |-> v_current_term[_nid],
         log |-> v_log[_nid],
         snapshot |-> v_snapshot[_nid],
         voted_for |-> v_voted_for[_nid],
-        vote_granted |-> v_vote_granted[_nid],
         commit_index |-> v_commit_index[_nid],
-        match_index |-> v_match_index[_nid],
-        next_index |-> v_next_index[_nid]
+        conf_committed |-> v_conf_committed[_nid],
+        conf_new |-> v_conf_new[_nid],
+        follower_vote_granted |-> v_follower_vote_granted[_nid],        
+        follower_next_index |-> v_follower_next_index[_nid],
+        follower_match_index |-> v_follower_match_index[_nid],
+        follower_term_commit_index |-> v_follower_term_commit_index[_nid],
+        follower_conf |-> v_follower_conf[_nid]
     ]
 
                
@@ -173,38 +173,16 @@ ActionCheckState(_node_id) ==
     ActionsFromHandle(
             _RaftVariables,
             {_node_id}, 
-            ActionCheck, 
+            ActionInput, 
             __ActionCheck
        )
 
-
-_RaftVariablesNew(_nid, _context) ==
-    [
-        state |-> IF "state" \in DOMAIN _context THEN _context.state[_nid] ELSE v_state[_nid],
-        current_term |-> IF "current_term" \in DOMAIN _context THEN _context.current_term[_nid] ELSE v_current_term[_nid],
-        log |-> IF "log" \in DOMAIN _context THEN _context.log[_nid] ELSE v_log[_nid],
-        snapshot |-> IF "snapshot" \in DOMAIN _context THEN _context.snapshot[_nid] ELSE v_snapshot[_nid],
-        voted_for |-> IF "voted_for" \in DOMAIN _context THEN _context.voted_for[_nid] ELSE v_voted_for[_nid],
-        vote_granted |-> IF "vote_granted" \in DOMAIN _context THEN _context.vote_granted[_nid] ELSE v_vote_granted[_nid],
-        commit_index |-> v_commit_index[_nid],
-        match_index |-> v_match_index[_nid],
-        next_index |-> v_next_index[_nid]
-    ]
-
-ActionSeqCheckNew(_node_id, _context) ==
-    ActionsFromHandleContext(
-            _RaftVariablesNew,
-            {_node_id}, 
-            ActionCheck, 
-            __ActionCheck,
-            _context
-       )
        
 InitActionSeqSetup(_node_id) ==
     ActionsFromHandle(
             _RaftVariables,
             _node_id, 
-            ActionSetup, 
+            ActionInput, 
             __ActionInit
        )
        
@@ -212,11 +190,27 @@ ActionSeqSetupAll(_node_id) ==
     ActionsFromHandle(
             _RaftVariables,
             _node_id, 
-            ActionSetup, 
+            ActionInput, 
             __ActionInit
        )
 
+SaveVars ==
+    [
+        role |-> v_role,
+        current_term |-> v_current_term,
+        log |-> v_log,
+        snapshot |-> v_snapshot,
+        voted_for |-> v_voted_for,
+        commit_index |-> v_commit_index,
+        conf_committed |-> v_conf_committed,
+        conf_new |-> v_conf_new        
+    ]
     
+SaveStates ==
+    DB_SAVE_STATE_PATH /= "" =>
+        SaveValue(SaveVars, DB_SAVE_STATE_PATH)
+
+        
 SaveActions ==
     DB_ACTION_PATH /= "" =>
         SaveValue(__action__, DB_ACTION_PATH)
@@ -225,14 +219,14 @@ SaveInitActions ==
     DB_ACTION_PATH /= "" =>
         SaveValue(__action__, DB_ACTION_PATH)
 
-ContextNull == [null |-> "null"]
-ContextHasMessage(_context) == "message" \in DOMAIN _context
+
 
 CntAppendLog == "App"
 CntHandleAppendReq == "HAppReq"
-CntHandleAppendResp == "HAppReq"
+CntHandleAppendResp == "HAppResp"
 CntLogCompaction == "LogComp"
 CntHandleApplyReq == "HAplReq"
+CntHandleApplyResp == "HAplResp"
 
 CntVoteReq == "Vote"
 CntHandleVoteReq == "HVoteReq"
@@ -251,21 +245,37 @@ CntReConfBegin == "ReConfBegin"
 CntReConfCommit == "ReConfCommit"
 
 CntLimitDomain == {
-
-CntAppendLog, CntHandleAppendReq, CntHandleAppendResp,  
-CntLogCompaction, CntHandleApplyReq,
-CntClientReq,
-CntRestart,
-CntVoteReq, CntHandleVoteReq, CntHandleVoteResp,
-CntTickUpConf,
-CntHandleUpConfReq,
-CntHandleUpConfResp,
-CntReConfBegin,
-CntReConfCommit
+    CntAppendLog, 
+    CntHandleAppendReq, 
+    CntHandleAppendResp,  
+    CntLogCompaction, 
+    CntHandleApplyReq,
+    CntHandleApplyResp,
+    CntClientReq,
+    CntRestart,
+    CntVoteReq, 
+    CntHandleVoteReq, 
+    CntHandleVoteResp,
+    CntTickUpConf,
+    CntHandleUpConfReq,
+    CntHandleUpConfResp,
+    CntReConfBegin,
+    CntReConfCommit
 }
 
 
-\* TODO, initialized state     
+
+
+_ConfTermIndex(
+    _term,
+    _index
+) ==
+    [
+        term |-> _term,
+        index |-> _index
+    ]
+
+  
 _Init(
     _node_id,
     _value,
@@ -274,43 +284,41 @@ _Init(
     _state_db_path
 )
  ==
-    /\ IF  _enable_state_db THEN (
-            InitSaftyStateTrival(
-                v_state,
-                v_current_term,
-                v_log,
-                v_snapshot,
-                v_voted_for,
-                _node_id,
-                _value,
-                1,
-                1, 
-                1
-                )
-         )
-         ELSE (LET s == QueryAllValues(_state_db_path)
-                IN /\ \E e \in s:
-                    /\ v_state = e.state
-                    /\ v_current_term = e.current_term
-                    /\ v_log = e.log
-                    /\ v_snapshot = e.snapshot
-                    /\ v_voted_for = e.voted_for
-               )   
+    /\ IF _enable_state_db THEN
+        \* read initial state from database
+        LET all_state_set == QueryAllValues(_state_db_path)
+        IN \E all_state \in all_state_set:
+          (LET node_ids_has_state == DOMAIN all_state.role
+               e == InitStateSetup(
+                    _node_id \ node_ids_has_state, node_ids_has_state, all_state, _value)
+           IN /\ v_role = e.role
+                /\ v_current_term = e.current_term
+                /\ v_log = e.log
+                /\ v_snapshot = e.snapshot
+                /\ v_voted_for = e.voted_for
+                /\ v_commit_index = e.commit_index
+                /\ v_conf_committed = e.conf_committed
+                /\ v_conf_new = e.conf_new
+           ) 
+       ELSE
+           \* build initial state
+           LET e == InitStateSetup(_node_id, {}, NULL, _value)
+           IN   /\ v_role = e.role
+                /\ v_current_term = e.current_term
+                /\ v_log = e.log
+                /\ v_snapshot = e.snapshot
+                /\ v_voted_for = e.voted_for
+                /\ v_commit_index = e.commit_index
+                /\ v_conf_committed = e.conf_committed
+                /\ v_conf_new = e.conf_new 
     /\ v_messages = {}
-    /\ v_commit_index = [i \in _node_id |-> v_snapshot[i].index]
-    /\ v_next_index = [i \in _node_id |-> [j \in NODE_ID |-> 1]]
-    /\ v_match_index = [i \in _node_id |-> [j \in NODE_ID |-> 0]]
-    /\ v_vote_granted = [i \in _node_id |-> {}]
     /\ v_history = <<>>
     /\ v_acked_value = {}
-    /\ v_config_committed = [i \in _node_id |-> 
-                [version |-> 1, term |-> v_current_term[i], node |-> _node_id]
-            ]
-    /\ v_config_new = [i \in _node_id |-> 
-                [version |-> 1, term |-> v_current_term[i], node |-> _node_id, commit_index |-> v_commit_index[i]]
-            ]
-    /\ v_follower_config = [i \in _node_id |-> [j \in _node_id |-> NULL]]
-    /\ v_follower_term_cindex = [i \in _node_id |-> [j \in _node_id |-> [term |-> 0, commit_index |-> 0]]]
+    /\ v_follower_next_index = [i \in _node_id |-> [j \in NODE_ID |-> 1]]
+    /\ v_follower_match_index = [i \in _node_id |-> [j \in NODE_ID |-> 0]]
+    /\ v_follower_vote_granted = [i \in _node_id |-> [j \in NODE_ID |-> 0]]
+    /\ v_follower_conf = [i \in _node_id |-> [j \in _node_id |-> [conf_committed |-> _ConfVersion(0, 0, 0), conf_new |-> _ConfVersion(0, 0, 0)]]]
+    /\ v_follower_term_commit_index = [i \in _node_id |-> [j \in _node_id |-> _ConfTermIndex(0, 0)]]
     /\ v_cnt_limit = [i \in CntLimitDomain |-> 0]
     /\ LET actions == InitActionSeqSetup(_node_id)
        IN __action__ = InitAction(
@@ -322,36 +330,38 @@ _Init(
 
 _ConfigQuorumCheck(
     _leader,
-    _config,
-    _follower_config,
-    _check_config_new
+    _config_term,
+    _config_version,
+    _config_node,
+    _follower_conf,
+    _check_conf_new
 ) ==
-    /\ _config /= NULL
-    /\ _leader \in _config.node
-    /\ \E Q \in QuorumOf(_config.node):
+
+    /\ _leader \in _config_node
+    /\ \E Q \in QuorumOf(_config_node):
             /\ _leader \in Q
             /\ \A j \in Q \ {_leader}:
-                /\ _follower_config[j] /= NULL
-                /\ IF _check_config_new THEN
-                        /\ _follower_config[j].config_new.version = _config.version
-                        /\ _follower_config[j].config_new.term = _config.term
+                /\ _follower_conf[j] /= NULL
+                /\ IF _check_conf_new THEN
+                        /\ _follower_conf[j].conf_new.version = _config_version
+                        /\ _follower_conf[j].conf_new.term = _config_term
                    ELSE
-                        /\ _follower_config[j].config_committed.version = _config.version
-                        /\ _follower_config[j].config_committed.term = _config.term
+                        /\ _follower_conf[j].conf_committed.version = _config_version
+                        /\ _follower_conf[j].conf_committed.term = _config_term
                         
 _TermCommitIndexQuorumCheck(
     _leader,
     _leader_term,
-    _config_new,
+    _conf_new,
     _follower_term_cindex
 ) ==
-    /\ _config_new /= NULL
-    /\ _leader \in _config_new.node
-    /\ \E Q \in QuorumOf(_config_new.node):
+    /\ _conf_new /= NULL
+    /\ _leader \in _conf_new.nid_vote
+    /\ \E Q \in QuorumOf(_conf_new.nid_vote):
            /\ _leader \in Q
            /\ \A j \in Q \ {_leader}:
                 /\ _follower_term_cindex[j].term = _leader_term
-                /\ _follower_term_cindex[j].commit_index >= _config_new.commit_index
+                /\ _follower_term_cindex[j].index >= _conf_new.conf_version.index
 
            
 
@@ -361,11 +371,11 @@ _QuorumOverlapped(_node_set1, _node_set2) ==
 
 
     
-_ConfigNew(_config_committed, _config_new, _i) ==
-     IF _config_new[_i] /= NULL THEN
-        _config_committed[_i]
+_ConfigNew(_conf_committed, _conf_new, _i) ==
+     IF _conf_new[_i] /= NULL THEN
+        _conf_committed[_i]
      ELSE
-        _config_new[_i]
+        _conf_new[_i]
         
 LastEntryIndex(_log, _next_index, i, j) ==
     Min({
@@ -383,6 +393,21 @@ PrevLogIndex(_next_index, i, j) ==
         0
 
 
+_IndexTermOfSnapshotEntries(_entries) ==
+        IF Cardinality(_entries) = 0 THEN 
+            [begin_index |-> 0, end_index |-> 0, index |-> 0, term |-> 0]
+        ELSE
+            LET begin_e == CHOOSE e \in _entries:
+                            ~(\E _e \in _entries:
+                                _e.index < e.index
+                             )
+                end_e == CHOOSE e \in _entries:
+                            ~(\E _e \in _entries:
+                                _e.index > e.index
+                             )
+            IN \* [begin_index, end_index] , minimum, maximum index pair
+                [begin_index |-> begin_e.index, end_index |-> end_e.index, index |-> end_e.index, term |-> end_e.term]
+
 
 
 MessageApplySnapshot(
@@ -391,56 +416,49 @@ MessageApplySnapshot(
     _term,
     _snapshot
 ) == 
+    LET index_term == _IndexTermOfSnapshotEntries(_snapshot.entries)
+    IN
      Message(_source, _dest, ApplyReq,
          [
-            source_nid      |-> _source,
             term     |-> _term,
             id       |-> "",
-            snapshot |-> _snapshot,
-            iter      |-> <<>>
+            begin_index |-> index_term.begin_index,
+            end_index |-> index_term.end_index,
+            snapshot |-> _snapshot
          ]
      )
 
 
-MessageUpdateConfigReq(
+\* TLA+ {D240422N-MsgUpdateConfReq}
+MsgUpdateConfReq(
     _source,
     _dest,
     _term,
-    _config_committed,
-    _config_new
+    _conf_committed,
+    _conf_new
 ) ==
      Message(_source, _dest, UpdateConfigReq,
          [
-            source_nid      |-> _source,
             term     |-> _term,
-            config_committed |-> 
-                [
-                    term |-> _config_committed.term,
-                    version |-> _config_committed.version,
-                    node |-> _config_committed.node
-                ],
-            config_new |-> 
-                [
-                    term |-> _config_new.term,
-                    version |-> _config_new.version,
-                    node |-> _config_new.node
-                ]
+            conf_committed |-> _conf_committed,
+            conf_new |-> _conf_new
          ]
      )
 
-MessageUpdateConfigResp(
+\* TLA+ {D240422N-MsgUpdateConfResp}
+MsgUpdateConfResp(
     _source,
     _dest,
     _term,
-    _config_committed,
-    _config_new
+    _conf_committed,
+    _conf_new
 ) ==
      Message(_source, _dest, UpdateConfigResp,
          [
-            source_nid |-> _source,
+
             term     |-> _term,
-            config_committed |-> _config_committed,
-            config_new |-> _config_new
+            conf_committed |-> _conf_committed,
+            conf_new |-> _conf_new
          ]
      )
           
@@ -448,7 +466,7 @@ _UpdateTerm(_node_id, _term) ==
     IF _term > v_current_term[_node_id] THEN
             [state |-> Follower, current_term |-> _term, voted_for |-> INVALID_NODE_ID]
     ELSE
-            [state |-> v_state[_node_id], current_term |-> v_current_term[_node_id], voted_for |-> v_voted_for[_node_id]]
+            [state |-> v_role[_node_id], current_term |-> v_current_term[_node_id], voted_for |-> v_voted_for[_node_id]]
 
 
 _ConfigVersionLess(_c1, _c2) ==
@@ -457,8 +475,8 @@ _ConfigVersionLess(_c1, _c2) ==
         /\ _c1.version < _c2.version
        )
 
-    
-MessageAppendRequest(
+\* TLA+ {D240504N-MsgAppendRequest}    
+MsgAppendRequest(
     _source,
     _dest,
     _term,
@@ -471,29 +489,27 @@ MessageAppendRequest(
     _aux_payload
 ) ==
     LET  payload == 
-                IF _aux_payload THEN
+        IF _aux_payload THEN
+    
+                [
+                    term            |-> _term,
+                    prev_log_index  |-> _prev_log_index,
+                    prev_log_term   |-> _prev_log_term,
+                    log_entries     |-> _log_entries,
+                    commit_index    |-> _commit_index,
+                    \* only valid for checking safty invariant
+                    leader_log    |-> _leader_log,
+                    leader_snapshot |-> _leader_snapshot
+                ]
             
-                        [
-                            source_nid      |-> _source,
-                            term            |-> _term,
-                            prev_log_index  |-> _prev_log_index,
-                            prev_log_term   |-> _prev_log_term,
-                            log_entries     |-> _log_entries,
-                            commit_index    |-> _commit_index,
-                            \* only valid for checking safty invariant
-                            leader_log    |-> _leader_log,
-                            leader_snapshot |-> _leader_snapshot
-                        ]
-                    
-                ELSE
-                        [
-                            source_nid      |-> _source,
-                            term            |-> _term,
-                            prev_log_index  |-> _prev_log_index,
-                            prev_log_term   |-> _prev_log_term,
-                            log_entries     |-> _log_entries,
-                            commit_index    |-> _commit_index
-                        ]          
+        ELSE
+                [
+                    term            |-> _term,
+                    prev_log_index  |-> _prev_log_index,
+                    prev_log_term   |-> _prev_log_term,
+                    log_entries     |-> _log_entries,
+                    commit_index    |-> _commit_index
+                ]          
     IN Message(_source, _dest, AppendRequest, payload)
 
 
@@ -531,7 +547,7 @@ _AppendRequestMessages(
                         prev_log_index + 1, 
                         _append_max)
                 commit_index == _commit_index[_source]
-                append_message == MessageAppendRequest(
+                append_message == MsgAppendRequest(
                         _source,                          \*_source,
                         _dest,                          \*_dest,
                         _current_term[_source],           \* _term,
@@ -589,9 +605,9 @@ UpdateAckedValues(
 _BecomeLeader(
     _node_id,
     _v_current_term,
-    _v_state,
-    _v_next_index,
-    _v_match_index,
+    _v_role,
+    _v_follower_next_index,
+    _v_follower_match_index,
     _v_commit_index,
     _v_log,
     _v_snapshot,
@@ -609,61 +625,66 @@ _BecomeLeader(
             ]
         ] 
         IN _v_history' = AppendHistory(_v_history, o, _check_safety)
-    /\ v_state' = [v_state EXCEPT ![_node_id] = Leader]
+    /\ v_role' = [v_role EXCEPT ![_node_id] = Leader]
     /\ LET last_log_index == LastLogIndex(_v_log[_node_id], _v_snapshot[_node_id])
-        IN  _v_next_index' = [_v_next_index EXCEPT ![_node_id] = [j \in NODE_ID |-> last_log_index + 1]]
-    /\ _v_match_index' = [_v_match_index EXCEPT ![_node_id] = [j \in NODE_ID |-> _v_snapshot[_node_id].index]]
+        IN  _v_follower_next_index' = [_v_follower_next_index EXCEPT ![_node_id] = [j \in NODE_ID |-> last_log_index + 1]]
+    /\ _v_follower_match_index' = [_v_follower_match_index EXCEPT ![_node_id] = [j \in NODE_ID |-> _v_snapshot[_node_id].index]]
     /\ _v_commit_index' = [_v_commit_index EXCEPT ![_node_id] = _v_snapshot[_node_id].index]
 
 
 _ClearLeaderVar(_nid, _nid_set) ==
-    /\ v_vote_granted'   = [v_vote_granted EXCEPT ![_nid] = {}]
-    /\ v_next_index' = [v_next_index EXCEPT ![_nid] = [j \in NODE_ID |-> 1]]
-    /\ v_match_index' = [v_match_index EXCEPT ![_nid] = [j \in NODE_ID |-> 0]]
+    /\ v_follower_vote_granted'   = [v_follower_vote_granted EXCEPT ![_nid] = [j \in _nid_set |-> 0]]
+    /\ v_follower_next_index' = [v_follower_next_index EXCEPT ![_nid] = [j \in _nid_set |-> 1]]
+    /\ v_follower_match_index' = [v_follower_match_index EXCEPT ![_nid] = [j \in _nid_set |-> 0]]
     /\ v_commit_index' = [v_commit_index EXCEPT ![_nid] = v_snapshot[_nid].index]
-    /\ v_follower_term_cindex' = [v_follower_term_cindex EXCEPT ![_nid] = [j \in _nid_set |-> [term |-> 0, commit_index |-> 0]]]
-    /\ v_follower_config' = [v_follower_config EXCEPT ![_nid] = [j \in _nid_set |-> NULL]]
+    /\ v_follower_term_commit_index' = [v_follower_term_commit_index EXCEPT ![_nid] = [j \in _nid_set |-> [term |-> 0, index |-> 0]]]
+    /\ v_follower_conf' = [v_follower_conf EXCEPT ![_nid] = [j \in _nid_set |->
+                [conf_committed |-> _ConfVersion(0, 0, 0), conf_new |-> _ConfVersion(0, 0, 0)]
+            ]]
 
 _UnchangedLeaderVar(_nid) ==
-    /\ UNCHANGED <<v_vote_granted, v_match_index, v_commit_index, v_follower_term_cindex, v_follower_config>>
+    /\ UNCHANGED <<v_follower_vote_granted, v_follower_match_index, v_commit_index, v_follower_term_commit_index, v_follower_conf>>
     
 
 \* NODE_ID _node_id times out and starts a new election.
 VoteRequestVote(_node_id, _max_term, _check_safety, _node_id_set, _enable_action) == 
+    /\ _node_id \in v_conf_committed[_node_id].nid_vote
+    /\ _node_id \in v_conf_new[_node_id].nid_vote
     /\ TermLE(_node_id, v_current_term, _max_term)
-    /\ v_state[_node_id] = Follower
+    /\ v_role[_node_id] = Follower
     /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = v_current_term[_node_id] + 1]
     /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = _node_id]
-    /\ IF {_node_id} = NODE_ID THEN
+    /\ LET nodes == v_conf_committed[_node_id].nid_vote \cup v_conf_new[_node_id].nid_vote
+       IN  (
+        /\ IF {_node_id} = nodes THEN
                 _BecomeLeader(
                     _node_id,
                     v_current_term',
-                    v_state,
-                    v_next_index,
-                    v_match_index,
+                    v_role,
+                    v_follower_next_index,
+                    v_follower_match_index,
                     v_commit_index,
                     v_log,
                     v_snapshot,v_history, _check_safety)
-           ELSE /\ v_state' = [v_state EXCEPT ![_node_id] = Candidate]
-                /\ UNCHANGED <<v_history, v_match_index, v_next_index, v_commit_index>>
-    /\ v_vote_granted'   = [v_vote_granted EXCEPT ![_node_id] = {_node_id}]
-    /\  LET  payload == [
-                term            |-> v_current_term[_node_id] + 1,
-                last_log_term   |-> LastLogTerm(v_log[_node_id], v_snapshot[_node_id]),
-                last_log_index  |-> LastLogIndex(v_log[_node_id], v_snapshot[_node_id]),
-                source_nid |-> _node_id
-            ]  
-            messages == MessageSet({_node_id}, NODE_ID \ {_node_id}, VoteRequest,  payload)
-            actions_input == Action(ActionInput, MessageNP(_node_id, _node_id, __ActionRequestVote))
-            actions_output == Actions(ActionOutput, messages)
-            actions0 == ActionCheckState(_node_id)
-            actions == ActionSeqSetupAll(_node_id_set)
-        IN /\ v_messages' = WithMessageSet(messages, v_messages)
-           /\ SetAction(__action__, actions, actions0 \o actions_input \o actions_output, _enable_action)
+           ELSE /\ v_role' = [v_role EXCEPT ![_node_id] = Candidate]
+                /\ UNCHANGED <<v_history, v_follower_match_index, v_follower_next_index, v_commit_index>>
+        /\ v_follower_vote_granted'   = [v_follower_vote_granted EXCEPT ![_node_id][_node_id] = v_current_term'[_node_id]]
+        /\  LET  payload == [
+                    term            |-> v_current_term[_node_id] + 1,
+                    last_log_term   |-> LastLogTerm(v_log[_node_id], v_snapshot[_node_id]),
+                    last_log_index  |-> LastLogIndex(v_log[_node_id], v_snapshot[_node_id])
+                ]  
+                messages == MessageSet({_node_id}, nodes \ {_node_id}, VoteRequest,  payload)
+                actions_input == Action(ActionInput, MessageNP(_node_id, _node_id, __ActionRequestVote))
+                actions_output == Actions(ActionOutput, messages)
+                actions0 == ActionCheckState(_node_id)
+                actions == ActionSeqSetupAll(_node_id_set)
+            IN /\ v_messages' = WithMessageSet(messages, v_messages)
+               /\ SetAction(__action__, actions, actions0 \o actions_input \o actions_output, _enable_action)
+        )
     /\ UNCHANGED <<
             v_log, 
             v_snapshot,
-            v_history,
             v_acked_value,
             vars_config
             >>
@@ -683,8 +704,7 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, action, _node_id_set,
                     _msg_payload.last_log_index)
         payload == [
                 term |-> term_context.current_term,
-                vote_granted |-> grant,
-                source_nid |-> _node_id
+                vote_granted |-> grant
             ]
         a1 == action  
         reply ==  Message(_node_id, _from_node_id, VoteResponse, payload)
@@ -692,11 +712,11 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, action, _node_id_set,
         actions == ActionSeqSetupAll(_node_id_set)
     IN /\  (\/ (/\ grant
                 /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = _from_node_id] 
-                /\ v_state' = [v_state EXCEPT ![_node_id] = term_context.state]
+                /\ v_role' = [v_role EXCEPT ![_node_id] = term_context.state]
                 /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = term_context.current_term]
                )
             \/ (/\ ~grant
-                /\ v_state' = [v_state EXCEPT ![_node_id] = term_context.state]
+                /\ v_role' = [v_role EXCEPT ![_node_id] = term_context.state]
                 /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = term_context.voted_for]
                 /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = term_context.current_term]
                )
@@ -704,7 +724,7 @@ __HandleVoteRequest(_node_id, _from_node_id, _msg_payload, action, _node_id_set,
         /\ SetAction(__action__, actions, a1 \o a2, _enable_action)
         /\ v_messages' = WithMessage(reply, v_messages)   
         /\ UNCHANGED << 
-                v_vote_granted,
+                v_follower_vote_granted,
                 v_log, 
                 v_snapshot,
                 v_history,
@@ -718,23 +738,22 @@ __HandleVoteResponse(i, _from_node, _m, _actions, _check_safety, _node_id, _enab
      /\ LET actions == ActionSeqSetupAll(_node_id)
         IN 
         IF _m.term = v_current_term[i] THEN
-            /\ v_state[i] \in {Candidate, Leader} 
+            /\ v_role[i] \in {Candidate, Leader} 
             /\ (\/( /\ _m.vote_granted
-                    /\ v_vote_granted' = [v_vote_granted EXCEPT ![i] =
-                                            v_vote_granted[i] \cup {_from_node}]    
-                    /\ IF  /\ v_state[i] = Candidate
-                           /\ LET granted_set == v_vote_granted[i] \cup {_from_node} 
-                              IN /\ granted_set \in  QuorumOf(v_config_committed[i].node)
-                                 /\ (\/ v_config_new[i] = v_config_committed[i]
-                                     \/ granted_set \in QuorumOf(v_config_new[i].node)
+                    /\ v_follower_vote_granted' = [v_follower_vote_granted EXCEPT ![i][_from_node] = _m.term]    
+                    /\ IF  /\ v_role[i] = Candidate
+                           /\ LET granted_set == { j \in _node_id : v_follower_vote_granted'[i][j] = v_current_term[i] } \cup {i}
+                              IN /\ granted_set \in  QuorumOf(v_conf_committed[i].nid_vote)
+                                 /\ (\/ v_conf_new[i] = v_conf_committed[i]
+                                     \/ granted_set \in QuorumOf(v_conf_new[i].nid_vote)
                                     )
                        THEN
                         (     _BecomeLeader(
                                     i,
                                     v_current_term,
-                                    v_state,
-                                    v_next_index,
-                                    v_match_index,
+                                    v_role,
+                                    v_follower_next_index,
+                                    v_follower_match_index,
                                     v_commit_index,
                                     v_log,
                                     v_snapshot,v_history, _check_safety)
@@ -744,24 +763,24 @@ __HandleVoteResponse(i, _from_node, _m, _actions, _check_safety, _node_id, _enab
                        ELSE   
                             /\ SetAction(__action__, actions, _actions, _enable_action)
                             /\ UNCHANGED <<
-                                v_state, v_voted_for, v_current_term,
-                                v_next_index, v_match_index, v_commit_index, v_history>>                   
+                                v_role, v_voted_for, v_current_term,
+                                v_follower_next_index, v_follower_match_index, v_commit_index, v_history>>                   
                     )
                 \/ ( /\ ~_m.vote_granted
                      /\ SetAction(__action__, actions,  _actions, _enable_action)
                      /\ UNCHANGED <<
-                                v_state, v_voted_for, v_current_term, v_vote_granted,  
-                                v_next_index, v_match_index, v_commit_index, v_history>>
+                                v_role, v_voted_for, v_current_term, v_follower_vote_granted,  
+                                v_follower_next_index, v_follower_match_index, v_commit_index, v_history>>
                     )
                 )
              
         ELSE 
              /\ LET term_context == _UpdateTerm(i, _m.term)
-                IN (/\ v_state' = [v_state EXCEPT ![i] = term_context.state]
+                IN (/\ v_role' = [v_role EXCEPT ![i] = term_context.state]
                     /\ v_voted_for' = [v_voted_for EXCEPT ![i] = term_context.voted_for]
                     /\ v_current_term' = [v_current_term EXCEPT ![i] = term_context.current_term]   
                 )
-             /\ UNCHANGED <<v_vote_granted,  v_next_index, v_commit_index, v_match_index, v_history>>
+             /\ UNCHANGED <<v_follower_vote_granted,  v_follower_next_index, v_commit_index, v_follower_match_index, v_history>>
              /\ SetAction(__action__, actions,  _actions, _enable_action)
     /\ UNCHANGED <<v_log, v_snapshot, vars_config>>
 
@@ -770,11 +789,11 @@ __HandleVoteResponse(i, _from_node, _m, _actions, _check_safety, _node_id, _enab
 \* While implementations may want to send more than 1 at a time, this spec uses
 \* just 1 because it minimizes atomic regions without loss of generality.
 AppendLogEntries(i, _append_entries_max, _check_safety, _node_id, _enalbe_action) ==
-    /\ v_state[i] = Leader
-    /\ LET node_ids == v_config_committed[i].node \cup v_config_new[i].node
+    /\ v_role[i] = Leader
+    /\ LET node_ids == v_conf_committed[i].nid_log \cup v_conf_new[i].nid_log
            n == _append_entries_max 
            msgs == AppendRequestMessages(
-                v_log, v_next_index, 
+                v_log, v_follower_next_index, 
                 v_commit_index, 
                 v_current_term,
                 v_snapshot,
@@ -788,11 +807,11 @@ AppendLogEntries(i, _append_entries_max, _check_safety, _node_id, _enalbe_action
           /\ SetAction(__action__, actions0, actions1 \o actions2 \o actions3, _enalbe_action)    
     /\ UNCHANGED <<
             v_commit_index, 
-            v_current_term, v_state, 
+            v_current_term, v_role, 
             v_voted_for, v_snapshot, v_log, 
             v_history,
-            v_match_index,
-            v_next_index,
+            v_follower_match_index,
+            v_follower_next_index,
             v_acked_value
             >>
     /\ UNCHANGED <<vars_vote, vars_config>>
@@ -844,31 +863,32 @@ _HandleAppendLog(
                             0
                          )
                         reply_payload == [
-                            source_nid |-> _node_id,
                             term |-> current_term,
                             append_success |-> FALSE,
                             commit_index |-> 0,
                             match_index |-> 0,
-                            next_index |-> next_index
+                            next_index |-> next_index \* only when reject, tell leader the correct next index
                         ]
                        reply_message == Message(_node_id, _from_node_id, AppendResponse, reply_payload)
                        output_action == Action(ActionOutput, reply_message)
                     IN  /\ v_messages' = WithMessage(reply_message, v_messages)
                         /\ SetAction(__action__, _setup_action,   action_handle_append \o output_action, _enable_action)    
-                /\ v_state' = [v_state EXCEPT ![_node_id] = current_state]
+                /\ v_role' = [v_role EXCEPT ![_node_id] = current_state]
                 /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = current_voted_for]
                 /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = current_term]
                 /\ UNCHANGED <<v_acked_value, v_log, v_snapshot,  v_history, v_commit_index>>
             )
             [] result.append_result = APPEND_RESULT_TO_FOLLOWER -> (
                 /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = current_term]
-                /\ v_state' = [v_state EXCEPT ![_node_id] = Follower]
+                /\ v_role' = [v_role EXCEPT ![_node_id] = Follower]
                 /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = INVALID_NODE_ID]
                 /\ SetAction(__action__, _setup_action,   action_handle_append, _enable_action)    
                 /\ UNCHANGED <<v_acked_value, v_log, v_snapshot, v_messages, v_history, v_commit_index>>
             )
             [] result.append_result = APPEND_RESULT_ACCEPT -> (
-                /\ LET c_index == 
+                /\ 
+                    LET \* TLA+ {D240524N- update commit index}
+                        c_index == 
                         IF commit_index > v_commit_index[_node_id] THEN
                             IF commit_index <= result.match_index THEN
                                 commit_index
@@ -878,7 +898,6 @@ _HandleAppendLog(
                             v_commit_index[_node_id]
                         
                         reply_payload == [
-                            source_nid |-> _node_id,
                             term |-> current_term,
                             append_success |-> TRUE, 
                             match_index |-> result.match_index,
@@ -921,7 +940,7 @@ _HandleAppendLog(
                     ELSE 
                         UNCHANGED <<v_history>>
                     )
-                /\ v_state' = [v_state EXCEPT ![_node_id] = current_state]
+                /\ v_role' = [v_role EXCEPT ![_node_id] = current_state]
                 /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = current_voted_for]
                 /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = current_term]
                 /\ UNCHANGED <<v_snapshot>>
@@ -930,18 +949,18 @@ _HandleAppendLog(
                 FALSE
             )
         )
-        /\ UNCHANGED << v_next_index, v_match_index>>
+        /\ UNCHANGED << v_follower_next_index, v_follower_match_index>>
 
-Agree(_match_index, _index, _node_id, _v_config_committed, _v_config_new) ==
-    /\ LET _node_old == _v_config_committed[_node_id].node
+Agree(_match_index, _index, _node_id, _v_conf_committed, _v_conf_new) ==
+    /\ LET _node_old == _v_conf_committed[_node_id].nid_vote
           IN {_node_id} \cup 
             {
                 j \in _node_old :  
                     /\ j /= _node_id
                     /\ _match_index[_node_id][j] >= _index
             } \in QuorumOf(_node_old)
-    /\ (\/ _v_config_new[_node_id] = _v_config_committed[_node_id]
-        \/ LET _node_new == _v_config_new[_node_id].node
+    /\ (\/ _v_conf_new[_node_id] = _v_conf_committed[_node_id]
+        \/ LET _node_new == _v_conf_new[_node_id].nid_vote
            IN {_node_id} \cup 
                 {
                     j \in _node_new :  
@@ -950,16 +969,21 @@ Agree(_match_index, _index, _node_id, _v_config_committed, _v_config_new) ==
                 } \in QuorumOf(_node_new)
           )
 
-AgreeIndex(_match_index, _v_log, _v_snapshot, _node_id, _v_config_committed, _v_config_new) ==
+AgreeIndex(_match_index, _v_log, _v_snapshot, _node_id, _v_conf_committed, _v_conf_new) ==
     LET index_set == {_v_log[_node_id][j].index: j \in DOMAIN  _v_log[_node_id]} \cup 1.._v_snapshot[_node_id].index
-    IN {i \in index_set : Agree(_match_index, i, _node_id, _v_config_committed, _v_config_new) }
+    IN {i \in index_set : Agree(_match_index, i, _node_id, _v_conf_committed, _v_conf_new) }
     
     
-_HandleAdvanceCommitIndex(_match_index, _v_log, _v_snapshot, 
-     _v_config_committed, _v_config_new,
+_HandleAdvanceCommitIndex(
+    _match_index0, _v_log, _v_snapshot, 
+    _v_conf_committed, _v_conf_new,
     _node_id, _node_id_set, _check_safety
 ) ==
-    LET agree_indexes == AgreeIndex(_match_index, _v_log, _v_snapshot, _node_id,  _v_config_committed, _v_config_new)
+    
+    LET 
+        \* the leader's last index is its match index
+        _match_index == [_match_index0 EXCEPT ![_node_id][_node_id] = LastLogIndex(_v_log[_node_id], _v_snapshot[_node_id])]
+        agree_indexes == AgreeIndex(_match_index, _v_log, _v_snapshot, _node_id,  _v_conf_committed, _v_conf_new)
     IN IF agree_indexes /= {} THEN
         LET max_index == Max(agree_indexes)
         IN (IF max_index > v_commit_index[_node_id] THEN 
@@ -977,22 +1001,24 @@ _HandleAppendLogResponse(_node_id, _source, _payload, _node_id_set, _check_safet
               /\ _payload.term = v_current_term[_node_id]
               THEN (
                     /\ (\/ (/\ _payload.append_success
-                            /\ v_next_index'  = [v_next_index  EXCEPT ![_node_id][_source] = _payload.match_index + 1]
-                            /\ v_match_index' = [v_match_index EXCEPT ![_node_id][_source] = _payload.match_index]
-                            /\ _HandleAdvanceCommitIndex(v_match_index', v_log, v_snapshot,
-                                    v_config_committed, v_config_new,
+                            /\ v_follower_next_index'  = [v_follower_next_index  EXCEPT ![_node_id][_source] = _payload.match_index + 1]
+                            /\ v_follower_match_index' = [v_follower_match_index EXCEPT ![_node_id][_source] = _payload.match_index]
+                            /\ _HandleAdvanceCommitIndex(v_follower_match_index', v_log, v_snapshot,
+                                    v_conf_committed, v_conf_new,
                                  _node_id, _node_id_set, _check_safety)
-                            /\ v_follower_term_cindex' = [v_follower_term_cindex EXCEPT ![_node_id][_source] = [term |-> _payload.term, commit_index |-> _payload.commit_index] ]
+                            /\ v_follower_term_commit_index' = [
+                                v_follower_term_commit_index EXCEPT ![_node_id][_source] = 
+                                    [term |-> _payload.term, index |-> _payload.commit_index] ]
                            )
                         \/ (/\ \lnot _payload.append_success
                             /\ IF _payload.next_index > 0 THEN
                                     LET last_log_index == LastLogIndex(v_log[_node_id], v_snapshot[_node_id])
                                         new_next_index == Min({last_log_index + 1, _payload.next_index})
-                                    IN v_next_index'  = [v_next_index  EXCEPT ![_node_id][_source] = new_next_index]
+                                    IN v_follower_next_index'  = [v_follower_next_index  EXCEPT ![_node_id][_source] = new_next_index]
                                ELSE 
-                                    LET new_next_index == Max({v_next_index[_node_id][_source] - 1, 1})
-                                    IN v_next_index'  = [v_next_index  EXCEPT ![_node_id][_source] = new_next_index]
-                            /\ UNCHANGED <<v_acked_value, v_commit_index, v_match_index, v_follower_term_cindex>>
+                                    LET new_next_index == Max({v_follower_next_index[_node_id][_source] - 1, 1})
+                                    IN v_follower_next_index'  = [v_follower_next_index  EXCEPT ![_node_id][_source] = new_next_index]
+                            /\ UNCHANGED <<v_acked_value, v_commit_index, v_follower_match_index, v_follower_term_commit_index>>
                            )
                         )
                     /\ UNCHANGED <<v_log,v_messages, v_snapshot,  v_history>>
@@ -1003,15 +1029,15 @@ _HandleAppendLogResponse(_node_id, _source, _payload, _node_id_set, _check_safet
                     v_log, 
                     v_snapshot,
                     v_commit_index,
-                    v_next_index,
-                    v_match_index,
-                    v_vote_granted,
+                    v_follower_next_index,
+                    v_follower_match_index,
+                    v_follower_vote_granted,
                     v_messages,
-                    v_follower_term_cindex,
+                    v_follower_term_commit_index,
                     v_history
                     >>
             )
-     /\ v_state' = [v_state EXCEPT ![_node_id] = term_context.state]
+     /\ v_role' = [v_role EXCEPT ![_node_id] = term_context.state]
      /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = term_context.voted_for]
      /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = term_context.current_term]
 
@@ -1032,7 +1058,9 @@ HandleVoteResp(node_id, message, _check_safety, _node_id_set, _enable_action) ==
     /\ LET
           actions1 == ActionCheckState(node_id) 
           actions2 == Action(ActionInput, message)
-       IN __HandleVoteResponse(message.dest, message.source, message.payload, actions1 \o actions2, _check_safety, _node_id_set, _enable_action)
+       IN __HandleVoteResponse(message.dest, message.source, 
+            message.payload, actions1 \o actions2, 
+            _check_safety, _node_id_set, _enable_action)
     /\ UNCHANGED <<v_messages, v_acked_value>>
         
 
@@ -1047,7 +1075,7 @@ HandleAppendLogReq(_node_id, message, _check_safety, _node_id_set, _enable_actio
        IN /\ _HandleAppendLog(_node_id, from_node_id, payload, actions0, actions1 \o actions2, _check_safety, _enable_action) 
     /\ UNCHANGED <<vars_vote, vars_config>>
     
-
+\* TLA+ {D240524N- update commit index}
 HandleApplySnapshotReq(_node_id, message, _node_id_set, _enable_action) ==
     /\ message.dest = _node_id
     /\ message.name = ApplyReq
@@ -1056,37 +1084,68 @@ HandleApplySnapshotReq(_node_id, message, _node_id_set, _enable_action) ==
            actions0 == ActionSeqSetupAll(_node_id_set)
            actions1 == ActionCheckState(_node_id)
            term_context == _UpdateTerm(_node_id, payload.term)
-       IN  /\ (IF payload.term = term_context.current_term THEN
-                 ( /\ IF /\ payload.snapshot.index >= LastLogIndex(v_log[_node_id], v_snapshot[_node_id])
-                         /\ payload.snapshot.index > v_commit_index[_node_id]
-                      THEN
-                        /\ v_snapshot' = [v_snapshot EXCEPT ![_node_id] = payload.snapshot]
-                        /\ v_log' = [v_log EXCEPT ![_node_id] = <<>> ]
-                      ELSE
-                        UNCHANGED <<v_snapshot, v_log>>
-                   /\ LET resp_payload ==  [source_nid |-> _node_id, term |-> term_context.current_term, id |-> payload.id, iter |-> <<>>]
+       IN  /\ (IF /\ payload.term = term_context.current_term 
+                  /\ payload.begin_index < payload.end_index
+                  /\ payload.end_index >= 1
+                  /\ payload.end_index >= LastLogIndex(v_log[_node_id], v_snapshot[_node_id])
+                  /\ payload.end_index > v_commit_index[_node_id]
+               THEN
+                  /\ v_snapshot' = [v_snapshot EXCEPT ![_node_id] = payload.snapshot]
+                  /\ v_log' = [v_log EXCEPT ![_node_id] = <<>> ]
+                  /\ LET resp_payload ==  [term |-> term_context.current_term, id |-> payload.id, match_index |-> payload.end_index]
                           resp == Message(_node_id, from_node_id, ApplyResp, resp_payload)  
                           actions3 == Action(ActionOutput, resp)
                           actions2 == Action(ActionInput, message)
-                      IN SetAction(__action__, actions0, actions1 \o actions2 \o actions3, _enable_action)
-                 )
-             ELSE
-                   /\ LET actions2 == Action(ActionInput, message)
+                        
+                     IN /\ SetAction(__action__, actions0, actions1 \o actions2 \o actions3, _enable_action)
+                        /\ v_messages' = WithMessage(resp, v_messages)
+               ELSE
+                  /\ LET actions2 == Action(ActionInput, message)
                       IN SetAction(__action__, actions0, actions1 \o actions2, _enable_action)
-                   /\ UNCHANGED <<v_snapshot, v_log>>
+                  /\ UNCHANGED <<v_snapshot, v_log, v_messages>>
               )
-           /\ v_state' = [v_state EXCEPT ![_node_id] = term_context.state]
+           /\ v_role' = [v_role EXCEPT ![_node_id] = term_context.state]
            /\ v_voted_for' = [v_voted_for EXCEPT ![_node_id] = term_context.voted_for]
            /\ v_current_term' = [v_current_term EXCEPT ![_node_id] = term_context.current_term]
            /\ UNCHANGED <<
                         v_commit_index,
-                        v_next_index,
-                        v_match_index,
-                        v_messages,
+                        v_follower_next_index,
+                        v_follower_match_index,
                         v_history,
                         v_acked_value
                         >>
      /\ UNCHANGED <<vars_vote, vars_config>>
+
+HandleApplySnapshotResp(_node_id, message, _node_id_set, _enable_action) ==
+    /\ message.dest = _node_id
+    /\ message.name = ApplyResp
+    /\ LET _source == message.source
+           payload == message.payload
+       IN /\ payload.term = v_current_term[_node_id]
+          /\ v_follower_next_index'  = [v_follower_next_index  EXCEPT ![_node_id][_source] = 
+                Max({payload.match_index + 1, v_follower_next_index[_node_id][_source]})]
+          /\ v_follower_match_index' = [v_follower_match_index EXCEPT ![_node_id][_source] = 
+                Max({payload.match_index, v_follower_match_index[_node_id][_source]})]
+    /\ LET  actions0 == ActionSeqSetupAll(_node_id_set)
+            actions1 == ActionCheckState(_node_id)
+            actions2 == Action(ActionInput, message)
+       IN SetAction(__action__, actions0, actions1 \o actions2, _enable_action)
+    /\ UNCHANGED <<
+            v_role,
+            v_current_term,
+            v_log, 
+            v_voted_for,
+            v_snapshot,
+            v_commit_index,
+            v_follower_vote_granted,
+            v_messages,
+            v_history,
+            v_acked_value,  
+            v_conf_committed,
+            v_conf_new,
+            v_follower_conf,
+            v_follower_term_commit_index
+       >>
          
 HandleAppendLogResp(_node_id, message, _node_id_set, _check_safety, _enable_action) ==
     /\ message.dest = _node_id
@@ -1099,19 +1158,20 @@ HandleAppendLogResp(_node_id, message, _node_id_set, _check_safety, _enable_acti
        IN /\ _HandleAppendLogResponse(_node_id, from_node_id, payload, _node_id_set, _check_safety) 
           /\ SetAction(__action__, actions0, actions1 \o actions2, _enable_action)
     /\ UNCHANGED <<vars_vote, 
-            v_config_committed,
-            v_config_new,
-            v_follower_config
+            v_conf_committed,
+            v_conf_new,
+            v_follower_conf
         >>
 
 
     
 RestartNode(i, _node_id, _enable_action) ==
-    /\ v_state' = [v_state EXCEPT ![i] = Follower]
+    /\ v_role' = [v_role EXCEPT ![i] = Follower]
     /\ _ClearLeaderVar(i, _node_id)
-    /\ LET _a == Action(ActionInput, MessageLocalNP(i, __ActionRestartNode))
+    /\ LET  a1 == ActionCheckState(i)
+            a2 == Action(ActionInput, MessageLocalNP(i, __ActionRestartNode))
             actions0 == ActionSeqSetupAll(_node_id)
-       IN SetAction(__action__, actions0, _a, _enable_action)    
+       IN SetAction(__action__, actions0, a1 \o a2, _enable_action)    
     /\ UNCHANGED <<
             v_current_term,
             v_log, 
@@ -1120,30 +1180,37 @@ RestartNode(i, _node_id, _enable_action) ==
             v_messages,
             v_history,
             v_acked_value,
-            v_config_committed,
-            v_config_new
+            v_conf_committed,
+            v_conf_new
          >>
 
 
+
+_MergeSnapshotEntries(_snapshot_entries_1, _snapshot_entries_2) ==
+    LET entries == _snapshot_entries_1 \cup _snapshot_entries_2
+        entries_merged == \* left only one value with max index 
+            {
+                x \in entries:
+                ~ (\E y \in entries:
+                    /\ x.value = y.value
+                    /\ x.term <= y.term
+                    /\ x.index < y.index
+                  )
+            }
+    IN entries_merged
+       
 LogCompaction(nid, _node_id, _enable_action) ==
     /\ v_snapshot[nid].index < v_commit_index[nid]
     /\ LET  last_log_index == LastLogIndex(v_log[nid], v_snapshot[nid])
             compact_log_index == Min({last_log_index, v_commit_index[nid]})
             offset == LogIndexToOffset(v_log[nid], v_snapshot[nid], compact_log_index)
-            term == LogTermOfIndex(v_log[nid], v_snapshot[nid], compact_log_index)
             compact_log == SubSeq(v_log[nid], 1, offset)
-            
        IN ( /\ offset > 0
-            /\ LET snapshot_values == { 
-                v \in [
-                    value:VALUE,
-                    index:1..last_log_index
-                ]  : 
-                    \E i \in 1..Len(compact_log): 
-                        /\ compact_log[i].value = v.value
-                        /\ compact_log[i].index = v.index
-                        }
-               IN v_snapshot' = [v_snapshot EXCEPT  ![nid] = [index |-> compact_log_index, term |-> term, value |-> v_snapshot[nid].value \cup snapshot_values] ]
+            /\ LET entries1 == { compact_log[i]: i \in DOMAIN compact_log}
+                   entries2 == _MergeSnapshotEntries(v_snapshot[nid].entries, entries1)              
+                   index_term == _IndexTermOfSnapshotEntries(entries2)
+               IN v_snapshot' = [v_snapshot EXCEPT  ![nid] = 
+                    [index |-> index_term.index, term |-> index_term.term, entries |-> entries2] ]
             /\ v_log' = [v_log EXCEPT  ![nid] = SubSeq(v_log[nid], offset + 1, Len(v_log[nid]))]
             /\ LET  actions0 == ActionSeqSetupAll(_node_id)
                     actions1 == ActionCheckState(nid)
@@ -1151,7 +1218,7 @@ LogCompaction(nid, _node_id, _enable_action) ==
                 IN SetAction(__action__, actions0, actions1 \o actions2, _enable_action)
            )
     /\ UNCHANGED <<
-            v_state,
+            v_role,
             v_current_term,
             v_voted_for,
             v_messages,
@@ -1163,7 +1230,7 @@ LogCompaction(nid, _node_id, _enable_action) ==
 
 
 ClientRequest(nid, v , _node_id_set, _check_safety, _enable_action) ==
-    /\ v_state[nid] = Leader
+    /\ v_role[nid] = Leader
     /\ ~LogHasValue(v_log[nid], v_snapshot[nid], v)
     /\  LET entry == [
                 index |-> LastLogIndex(v_log[nid], v_snapshot[nid]) + 1,
@@ -1175,56 +1242,56 @@ ClientRequest(nid, v , _node_id_set, _check_safety, _enable_action) ==
             actions2 == Action(ActionInput, Message(nid, nid, __ActionClientRequest, v))
         IN SetAction(__action__, actions0, actions1 \o actions2, _enable_action)
     /\ IF NODE_ID = {nid} THEN
-          _HandleAdvanceCommitIndex(v_match_index, v_log', v_snapshot,
-                 v_config_committed, v_config_new,
+          _HandleAdvanceCommitIndex(v_follower_match_index, v_log', v_snapshot,
+                 v_conf_committed, v_conf_new,
                  nid, _node_id_set, _check_safety)
        ELSE
            UNCHANGED <<v_commit_index,v_acked_value>>
     /\ UNCHANGED <<
-            v_history, v_current_term, v_state, 
+            v_history, v_current_term, v_role, 
             v_voted_for, v_snapshot, v_messages, 
             vars_vote,
-            v_next_index, v_match_index, vars_config
+            v_follower_next_index, v_follower_match_index, vars_config
             >> 
 
 
 
-UpdateConfigReqMessages(
+MsgsUpdateConfReq(
     _source, 
     _node_ids, 
     _current_term,
-    _v_config_committed,
-    _v_config_new,
-    _v_follower_config
+    _v_conf_committed,
+    _v_conf_new,
+    _v_follower_conf
 ) ==
     LET f == [dest \in { 
                 i \in (_node_ids \ {_source}) :
-                  LET _conf == _v_follower_config[_source][i]
+                  LET _conf == _v_follower_conf[_source][i]
                   IN \/ _conf = NULL \* not set
                      \/ (/\ _conf /= NULL
-                         /\ (\/ _conf.config_committed.term /= _v_config_committed[_source].term
-                             \/ _conf.config_committed.version /= _v_config_committed[_source].version
-                             \/ _conf.config_new.term /= _v_config_committed[_source].term
-                             \/ _conf.config_new.version /= _v_config_committed[_source].version
+                         /\ (\/ _conf.conf_committed.term /= _v_conf_committed[_source].conf_version.term
+                             \/ _conf.conf_committed.version /= _v_conf_committed[_source].conf_version.version
+                             \/ _conf.conf_new.term /= _v_conf_committed[_source].conf_version.term
+                             \/ _conf.conf_new.version /= _v_conf_committed[_source].conf_version.version
                             )
                         )
               } |-> 
-                MessageUpdateConfigReq(
+                MsgUpdateConfReq(
                     _source, 
                     dest, 
                     _current_term[_source],
-                    _v_config_committed[_source],
-                    _v_config_new[_source]
+                    _v_conf_committed[_source],
+                    _v_conf_new[_source]
                     )
              ]
     IN {f[id] : id \in DOMAIN f}
 
 
-
-TickSendUpdateConfigToFollower(_nid, _nid_set, _enalbe_action) ==
-    /\ v_state[_nid] = Leader
-    /\ LET nid_set == v_config_committed[_nid].node \cup v_config_new[_nid].node 
-           msgs == UpdateConfigReqMessages(_nid, nid_set, v_current_term, v_config_committed, v_config_new, v_follower_config)
+\* TLA+ {D240422N-LeaderSendUpdateConfToFollower}
+LeaderSendUpdateConfToFollower(_nid, _nid_set, _enalbe_action) ==
+    /\ v_role[_nid] = Leader
+    /\ LET nid_set == v_conf_committed[_nid].nid_log \cup v_conf_new[_nid].nid_log 
+           msgs == MsgsUpdateConfReq(_nid, nid_set, v_current_term, v_conf_committed, v_conf_new, v_follower_conf)
            actions0 == ActionSeqSetupAll(_nid_set)
            actions1 == ActionCheckState(_nid)
            actions2 == Action(ActionInput, MessageLocalNP(_nid, __ActionSendUpdateConfig))
@@ -1233,64 +1300,52 @@ TickSendUpdateConfigToFollower(_nid, _nid_set, _enalbe_action) ==
           /\ SetAction(__action__, actions0, actions1 \o actions2 \o actions3, _enalbe_action)    
     /\ UNCHANGED <<
             v_commit_index, 
-            v_current_term, v_state, 
+            v_current_term, v_role, 
             v_voted_for, v_snapshot, v_log, 
             v_history,
-            v_match_index,
-            v_next_index,
+            v_follower_match_index,
+            v_follower_next_index,
             v_acked_value
             >>
     /\ UNCHANGED <<vars_vote, vars_config>>
 
 
-_UpdateConfig(
-    _node_id, _term, _config_committed, _config_new) ==
-    CASE _term > v_current_term[_node_id] -> (
-        [config_committed |-> _config_committed, config_new |-> _config_new, term |-> _term]
-    )
-    [] _term = v_current_term[_node_id] -> (
-        LET c_c == IF _ConfigVersionLess(v_config_committed[_node_id], _config_committed) THEN
-                _config_committed
-            ELSE
-                v_config_committed[_node_id]
-            c_n == IF _ConfigVersionLess(v_config_new[_node_id], _config_new) THEN
-                _config_new
-            ELSE
-                v_config_new[_node_id]
-        IN 
-        [config_committed |-> c_c, config_new |-> c_n, term |-> v_current_term[_node_id]]
-    )
-    [] OTHER -> (
-        [
-            config_committed |-> v_config_committed[_node_id], 
-            config_new |-> v_config_new[_node_id],
-            term |-> v_current_term[_node_id]
-        ]
-    )
-
-
-_ConfigTermVersion(
-    _config
+\* TLA+ {D240422N-_UpdateConf}
+_UpdateConf(
+    _node_id, 
+    _conf_committed, 
+    _conf_new
 ) ==
-    [term |-> _config.term, version |-> _config.version]
+        LET c_c == IF _ConfigVersionLess(v_conf_committed[_node_id].conf_version, _conf_committed.conf_version) THEN
+                _conf_committed
+            ELSE
+                v_conf_committed[_node_id]
+            c_n == IF _ConfigVersionLess(v_conf_new[_node_id].conf_version, _conf_new.conf_version) THEN
+                _conf_new
+            ELSE
+                v_conf_new[_node_id]
+        IN 
+        [conf_committed |-> c_c, conf_new |-> c_n, term |-> v_current_term[_node_id]]
 
-HandleUpdateConfigReq(_nid, _msg, _nid_set, _enable_action) ==
+
+
+\* TLA+ {D240422N-HandleUpdateConfReq}
+HandleUpdateConfReq(_nid, _msg, _nid_set, _enable_action) ==
     /\ _msg.dest = _nid
     /\ _msg.name = UpdateConfigReq
-    /\(LET config_committed == _msg.payload.config_committed
-           config_new == _msg.payload.config_new
+    /\(LET conf_committed == _msg.payload.conf_committed
+           conf_new == _msg.payload.conf_new
            term == _msg.payload.term
-           result == _UpdateConfig(_nid, term, config_committed, config_new)
+           result == _UpdateConf(_nid, conf_committed, conf_new)
            term_context == _UpdateTerm(_nid, _msg.payload.term)
-       IN /\ v_config_committed' = [v_config_committed EXCEPT ![_nid] = result.config_committed]
-          /\ v_config_new' = [v_config_new EXCEPT ![_nid] = result.config_new]
-          /\ v_state' = [v_state EXCEPT ![_nid] = term_context.state]
-          /\ v_voted_for' = [v_voted_for EXCEPT ![_nid] = term_context.voted_for]
-          /\ v_current_term' = [v_current_term EXCEPT ![_nid] = term_context.current_term]
-          /\ LET resp == MessageUpdateConfigResp(_msg.dest, _msg.source, 
+       IN \* only can update config when the term is equal to current term
+          /\ v_current_term[_nid] = term 
+          /\ v_conf_committed' = [v_conf_committed EXCEPT ![_nid] = result.conf_committed]
+          /\ v_conf_new' = [v_conf_new EXCEPT ![_nid] = result.conf_new]
+          /\ LET resp == MsgUpdateConfResp(_msg.dest, _msg.source, 
                 result.term,
-                _ConfigTermVersion(result.config_committed), 
-                _ConfigTermVersion(result.config_new)
+                result.conf_committed.conf_version, 
+                result.conf_new.conf_version
                 ) 
                 actions0 == ActionSeqSetupAll(_nid_set)
                 actions1 == ActionCheckState(_nid)
@@ -1300,37 +1355,39 @@ HandleUpdateConfigReq(_nid, _msg, _nid_set, _enable_action) ==
                  /\ SetAction(__action__, actions0,   actions1 \o input_action \o output_action, _enable_action)
                 ) 
       )
-    /\ UNCHANGED <<v_log, v_snapshot, v_history, vars_leader, v_acked_value, v_commit_index>>
+    /\ UNCHANGED <<v_log, v_snapshot, v_history, vars_leader, v_acked_value, v_commit_index,
+            v_role, v_voted_for, v_current_term
+            >>
 
 
-
-HandleUpdateConfigResp(_nid, _msg, _nid_set, _enable_action) ==
+\* TLA+ {D240422N-HandleUpdateConfResp}
+HandleUpdateConfResp(_nid, _msg, _nid_set, _enable_action) ==
     /\ _msg.dest = _nid
     /\ _msg.name = UpdateConfigResp
-    /\(LET config_committed == _msg.payload.config_committed
-           config_new == _msg.payload.config_new
+    /\(LET conf_committed == _msg.payload.conf_committed
+           conf_new == _msg.payload.conf_new
            term == _msg.payload.term
            source == _msg.source
        IN /\ v_current_term[_nid] = term
-          /\ IF \/ v_follower_config[_nid][source] = NULL
-                \/ v_follower_config[_nid][source].config_committed /= config_committed
-                \/ v_follower_config[_nid][source].config_new /= config_new
+          /\ v_role[_nid] = Leader
+          /\ IF \/ v_follower_conf[_nid][source] = NULL
+                \/ v_follower_conf[_nid][source].conf_committed /= conf_committed
+                \/ v_follower_conf[_nid][source].conf_new /= conf_new
              THEN
-                v_follower_config' = [v_follower_config EXCEPT ![_nid][source] = [config_committed |-> config_committed, config_new |-> config_new]]
+                v_follower_conf' = [v_follower_conf EXCEPT ![_nid][source] = [conf_committed |-> conf_committed, conf_new |-> conf_new]]
              ELSE
-                UNCHANGED v_follower_config
+                UNCHANGED v_follower_conf
        )
      /\ LET actions0 == ActionSeqSetupAll(_nid_set)
             actions1 == ActionCheckState(_nid)
             input_action == Action(ActionInput, _msg)
         IN SetAction(__action__, actions0,   actions1 \o input_action, _enable_action)  
      /\ UNCHANGED <<
-            __action__, 
             v_current_term, v_history, v_log, v_messages, v_snapshot, v_voted_for,
-            v_state,
+            v_role,
             vars_vote, vars_replicate,
-            v_follower_term_cindex,
-            v_config_committed, v_config_new
+            v_follower_term_commit_index,
+            v_conf_committed, v_conf_new
         >>
 
 _ConfigVersionEqual(
@@ -1340,52 +1397,68 @@ _ConfigVersionEqual(
     /\ _c1.term = _c2.term
     /\ _c2.version = _c2.version
 
-LeaderReConfigBegin(_nid, _node_new, _nid_set, _enable_action) ==
-    /\ v_state[_nid] = Leader
-    /\ v_config_committed[_nid].node /= _node_new
-    /\ _ConfigVersionEqual(v_config_committed[_nid], v_config_new[_nid]) \* already committed
-    /\ v_config_new' = [v_config_new EXCEPT ![_nid] = 
+\* TLA+ {D240422N-LeaderReConfBegin}
+LeaderReConfBegin(_nid, _nid_vote, _nid_log, _nid_set, _enable_action) ==
+    /\ v_role[_nid] = Leader
+    /\(\/ v_conf_committed[_nid].nid_vote /= _nid_vote
+       \/ v_conf_committed[_nid].nid_log /= _nid_log)
+    /\ _ConfigVersionEqual(v_conf_committed[_nid].conf_version, v_conf_new[_nid].conf_version) \* already committed
+    /\ v_conf_new' = [v_conf_new EXCEPT ![_nid] = 
             [
-                version |-> v_config_new[_nid].version + 1, 
-                term |-> v_current_term[_nid], 
-                node |-> _node_new,
-                commit_index |-> v_commit_index[_nid]
+                conf_version |-> [
+                    version |-> v_conf_new[_nid].conf_version.version + 1, 
+                    term |-> v_current_term[_nid],
+                    index |-> v_commit_index[_nid]
+                ],
+                nid_vote |-> _nid_vote,
+                nid_log |-> _nid_log
             ]
        ]
     /\ LET actions0 == ActionSeqSetupAll(_nid_set)
            actions1 == ActionCheckState(_nid)
-           input_action == Action(ActionInput, MessageLocal(_nid, __ActionUpdateConfigBegin, [node |-> _node_new]))
+           input_action == Action(ActionInput, MessageLocal(_nid, __ActionUpdateConfigBegin, [nid_vote |-> _nid_vote, nid_log |-> _nid_log]))
        IN SetAction(__action__, actions0,   actions1 \o input_action, _enable_action)  
-    /\ UNCHANGED <<v_state, v_current_term, v_log,  v_voted_for,
-                    v_snapshot, v_commit_index, v_next_index, v_match_index,
-                    v_vote_granted, v_messages, v_history, v_acked_value, 
-                    v_config_committed, v_follower_config, v_follower_term_cindex
+    /\ UNCHANGED <<v_role, v_current_term, v_log,  v_voted_for,
+                    v_snapshot, v_commit_index, v_follower_next_index, v_follower_match_index,
+                    v_follower_vote_granted, v_messages, v_history, v_acked_value, 
+                    v_conf_committed, v_follower_conf, v_follower_term_commit_index
                   >>
 
 
-    
-LeaderReConfigCommit(_nid, _nid_set, _enable_action) ==
-    /\ v_state[_nid] = Leader
-    /\ ~_ConfigVersionEqual(v_config_committed[_nid], v_config_new[_nid])  \* not comitted yet
-    /\ _ConfigQuorumCheck(_nid, v_config_committed[_nid], v_follower_config[_nid], FALSE)
-    /\ _ConfigQuorumCheck(_nid, v_config_new[_nid], v_follower_config[_nid], TRUE)
-    /\ _TermCommitIndexQuorumCheck(_nid, v_current_term[_nid], v_config_new[_nid], v_follower_term_cindex[_nid])
-    /\ v_config_committed' = [v_config_committed EXCEPT ![_nid] = v_config_new[_nid]]
+\* TLA+ {D240423N-LeaderReConfCommit}
+LeaderReConfCommit(_nid, _nid_set, _enable_action) ==
+    /\ v_role[_nid] = Leader
+    /\ ~_ConfigVersionEqual(v_conf_committed[_nid].conf_version, v_conf_new[_nid].conf_version)  \* not comitted yet
+        \*old configuration was accepted and ACKed by old quorum set
+        \*It is possible for old committed config was not ACKed by old quorum, the newly re-config cannot advance its commitment state
+    /\   _ConfigQuorumCheck(_nid, v_conf_committed[_nid].conf_version.term, v_conf_committed[_nid].conf_version.version, v_conf_committed[_nid].nid_vote, v_follower_conf[_nid], FALSE)
+        \*new configuration was accepted by old quorum set
+    /\ _ConfigQuorumCheck(_nid, v_conf_new[_nid].conf_version.term, v_conf_new[_nid].conf_version.version, v_conf_committed[_nid].nid_vote, v_follower_conf[_nid], TRUE)
+    /\ _ConfigQuorumCheck(_nid, v_conf_new[_nid].conf_version.term, v_conf_new[_nid].conf_version.version, v_conf_new[_nid].nid_vote, v_follower_conf[_nid], TRUE)
+    /\ _TermCommitIndexQuorumCheck(_nid, v_current_term[_nid], v_conf_new[_nid], v_follower_term_commit_index[_nid])
+    /\ v_conf_committed' = [
+            v_conf_committed EXCEPT ![_nid] = 
+                [
+                    conf_version |-> v_conf_new[_nid].conf_version,
+                    nid_vote |-> v_conf_new[_nid].nid_vote,
+                    nid_log |-> v_conf_new[_nid].nid_log
+                ]
+           ]
     /\ LET actions0 == ActionSeqSetupAll(_nid_set)
            actions1 == ActionCheckState(_nid)
            input_action == Action(ActionInput, MessageLocalNP(_nid, __ActionUpdateConfigCommit))
        IN SetAction(__action__, actions0,   actions1 \o input_action, _enable_action) 
-    /\ UNCHANGED <<v_state, v_current_term, v_log,  v_voted_for,
-                    v_snapshot, v_commit_index, v_next_index, v_match_index,
-                    v_vote_granted, v_messages, v_history, v_acked_value, 
-                    v_config_new, v_follower_config, v_follower_term_cindex
+    /\ UNCHANGED <<v_role, v_current_term, v_log,  v_voted_for,
+                    v_snapshot, v_commit_index, v_follower_next_index, v_follower_match_index,
+                    v_follower_vote_granted, v_messages, v_history, v_acked_value, 
+                    v_conf_new, v_follower_conf, v_follower_term_commit_index
                  >>
                     
 _CountLimit(_v_count, _type, _max_limit) ==
-     \/ (/\ _max_limit = 0
-         /\ _v_count' = _v_count
-        )
-     \/ (/\ _v_count[_type] < _max_limit
+    IF _max_limit > 100 THEN
+        /\ _v_count' = _v_count
+    ELSE
+        (/\ _v_count[_type] < _max_limit
          /\ _v_count' = [_v_count EXCEPT ![_type] = _v_count[_type] + 1 ]  
         )
        
@@ -1403,38 +1476,36 @@ _Next(
     _enable_action
 ) == 
     \/ \E i \in _node_id : 
-        \/ (/\ (\/ (/\ _CountLimit(v_cnt_limit, CntAppendLog, _max_replicate)
-                    /\ AppendLogEntries(i, _append_entries_max, _check_safety, _node_id, _enable_action)
-                   )
-                \/ (/\ _CountLimit(v_cnt_limit, CntLogCompaction, _max_replicate)
-                    /\ LogCompaction(i, _node_id, _enable_action)
-                   )
-                \/ (\E m \in v_messages :
-                    \/ ( /\ _CountLimit(v_cnt_limit, CntHandleAppendReq, _max_replicate)
-                         /\ HandleAppendLogReq(i, m, _check_safety, _node_id, _enable_action)
-                       )
-                    \/ (/\ _CountLimit(v_cnt_limit, CntHandleAppendResp, _max_replicate)
-                        /\ HandleAppendLogResp(i, m, _node_id, _check_safety, _enable_action)
-                         
-                       )
-                    \/ ( /\ _CountLimit(v_cnt_limit, CntHandleAppendResp, _max_replicate)
-                         /\ HandleApplySnapshotReq(i, m, _node_id, _enable_action)
-                        )
-                    )
-               )
+        \/ (/\ _CountLimit(v_cnt_limit, CntAppendLog, _max_replicate)
+            /\ AppendLogEntries(i, _append_entries_max, _check_safety, _node_id, _enable_action)
            )
-           
-        \/ (/\ (\/ (/\ _CountLimit(v_cnt_limit, CntVoteReq, _max_vote)
-                    /\ VoteRequestVote(i, _max_term, _check_safety, _node_id, _enable_action)
+        \/ (/\ _CountLimit(v_cnt_limit, CntLogCompaction, _max_replicate)
+            /\ LogCompaction(i, _node_id, _enable_action)
+           )
+        \/ (\E m \in v_messages :
+                \/ ( /\ _CountLimit(v_cnt_limit, CntHandleAppendReq, _max_replicate)
+                     /\ HandleAppendLogReq(i, m, _check_safety, _node_id, _enable_action)
                    )
-                \/ (\E m \in v_messages :
-                   \/ (/\ _CountLimit(v_cnt_limit, CntHandleVoteReq, _max_vote)
-                       /\ HandleVoteReq(i, m, _node_id, _enable_action)
-                      )
-                   \/ ( /\ _CountLimit(v_cnt_limit, CntHandleVoteResp, _max_vote) 
-                        /\ HandleVoteResp(i, m, _check_safety, _node_id, _enable_action))
-                      )
+                \/ (/\ _CountLimit(v_cnt_limit, CntHandleAppendResp, _max_replicate)
+                    /\ HandleAppendLogResp(i, m, _node_id, _check_safety, _enable_action)
+                     
+                   )
+                \/ ( /\ _CountLimit(v_cnt_limit, CntHandleApplyReq, _max_replicate)
+                     /\ HandleApplySnapshotReq(i, m, _node_id, _enable_action)
+                    )
+                \/ ( /\ _CountLimit(v_cnt_limit, CntHandleApplyResp, _max_replicate)
+                     /\ HandleApplySnapshotResp(i, m, _node_id, _enable_action)
+                    )
+            )
+        \/ (/\ _CountLimit(v_cnt_limit, CntVoteReq, _max_vote)
+                /\ VoteRequestVote(i, _max_term, _check_safety, _node_id, _enable_action)
                )
+        \/ (\E m \in v_messages :
+                \/ (/\ _CountLimit(v_cnt_limit, CntHandleVoteReq, _max_vote)
+                    /\ HandleVoteReq(i, m, _node_id, _enable_action)
+                   )
+                \/ (/\ _CountLimit(v_cnt_limit, CntHandleVoteResp, _max_vote) 
+                    /\ HandleVoteResp(i, m, _check_safety, _node_id, _enable_action))
            )
         \/ (/\ _CountLimit(v_cnt_limit, CntRestart, _max_restert) 
             /\ RestartNode(i, _node_id, _enable_action)
@@ -1444,32 +1515,34 @@ _Next(
                 ClientRequest(i, v, _node_id, _check_safety,  _enable_action)
             )
         \/ (/\ _CountLimit(v_cnt_limit, CntTickUpConf, _max_reconfig)
-            /\ TickSendUpdateConfigToFollower(i, _node_id, _enable_action)
+            /\ LeaderSendUpdateConfToFollower(i, _node_id, _enable_action)
            )
-        \/ (/\ _CountLimit(v_cnt_limit, CntTickUpConf, _max_reconfig)
-            /\ \E nodes \in SUBSET(_node_id):
-                /\ nodes /= {}
-                /\ LeaderReConfigBegin(i, nodes, _node_id, _enable_action)
+        \/ (/\ _CountLimit(v_cnt_limit, CntReConfBegin, _max_reconfig)
+            /\ \E nid_log \in SUBSET(_node_id):
+                 \E nid_vote \in SUBSET(nid_log):
+                    /\ nid_vote /= {}
+                    /\ nid_log /= {}
+                    /\ LeaderReConfBegin(i, nid_vote, nid_log, _node_id, _enable_action)
            )
-        \/ (/\ _CountLimit(v_cnt_limit, CntTickUpConf, _max_reconfig)
-            /\ LeaderReConfigCommit(i, _node_id, _enable_action)
+        \/ (/\ _CountLimit(v_cnt_limit, CntReConfCommit, _max_reconfig)
+            /\ LeaderReConfCommit(i, _node_id, _enable_action)
            )
         \/ (/\ _CountLimit(v_cnt_limit, CntHandleUpConfReq, _max_reconfig)
             /\ \E m \in v_messages :
-                HandleUpdateConfigReq(i, m, _node_id, _enable_action)
+                HandleUpdateConfReq(i, m, _node_id, _enable_action)
            )
         \/ (/\ _CountLimit(v_cnt_limit, CntHandleUpConfResp, _max_reconfig)
             /\ \E m \in v_messages :
-                HandleUpdateConfigResp(i, m, _node_id, _enable_action)
+                HandleUpdateConfResp(i, m, _node_id, _enable_action)
            )
            
 Init == 
     _Init(
         NODE_ID,
         VALUE,
-        DB_STATE_PATH = "",
+        DB_INIT_STATE_PATH /= "",
         ENABLE_ACTION,
-        DB_STATE_PATH
+        DB_INIT_STATE_PATH
     )
 
 Next == 
@@ -1526,8 +1599,8 @@ SpecP ==
      
 
 AssertStateOK ==
-    /\ BaseStateOK(
-        v_state,
+    /\ StateOK(
+        v_role,
         v_current_term,
         v_log,
         v_snapshot,
@@ -1550,7 +1623,7 @@ AssertLogIndexTermGrow ==
 AssertPrefixCommitted ==
     InvPrefixCommitted(
         NODE_ID,
-        v_config_committed,
+        v_conf_committed,
         v_commit_index,
         v_log,
         v_snapshot)
@@ -1571,12 +1644,21 @@ AssertLeaderHasAllAckedValues ==
         NODE_ID,
         VALUE,
         v_acked_value,
-        v_state,
+        v_role,
         v_current_term,
         v_log,
         v_snapshot
         )
 
+                    
+AssertSafty ==
+    /\ AssertStateOK
+    /\ AssertLogIndexTermGrow
+    /\ AssertPrefixCommitted
+    /\ AssertAtMostOneLeaderPerTerm
+    /\ AssertFollowerAppend
+    /\ AssertLeaderHasAllAckedValues
+    
 ===============================================================================
 
 

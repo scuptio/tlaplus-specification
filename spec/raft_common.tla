@@ -45,9 +45,9 @@ __ActionAdvanceCommitIndex == "DTMTesting::AdvanceCommitIndex"
 __ActionLogCompaction == "DTMTesting::LogCompaction"
 __ActionRestart == "DTMTesting::Restart"
 __ActionHandleApplySnapshotRequest == "DTMTesting::HandleApplyReq"
-__ActionSendUpdateConfig == "DTMTesting::SendUpdateConfig"
-__ActionUpdateConfigBegin == "DTMTesting::UpdateConfigBegin"
-__ActionUpdateConfigCommit == "DTMTesting::UpdateConfigCommit"
+__ActionSendUpdateConfig == "DTMTesting::SendUpdateConf"
+__ActionUpdateConfigBegin == "DTMTesting::UpdateConfBegin"
+__ActionUpdateConfigCommit == "DTMTesting::UpdateConfCommit"
 
 
 ReceiveMessageAction(_var, m) ==
@@ -75,113 +75,6 @@ LogDomain(_max_term, _value_set) == [
     value : _value_set
 ]
 
-MessagesDomain(_max_term, _value_set, _node_ids) == 
-
-    [
-        (*
-        @code {
-            struct VoteRequest {
-                term : u64,
-                last_log_term : u64,
-                last_log_index : u64,
-            }
-        }
-        *)
-        msg_type         : {VoteRequest},
-        term         : 1.._max_term,
-        last_log_term  : Nat,
-        last_log_index : Nat,
-        source       : _node_ids,
-        dest         : _node_ids
-    ]
-    \cup
-    [
-        (*@action {
-            struct VoteResponse {
-                term        : u64,
-                vote_granted : bool ,
-            }
-        }
-        @action*)
-        msg_type        : {VoteResponse},
-        term        : 1.._max_term,
-        vote_granted : BOOLEAN ,
-        source      : _node_ids,
-        dest        : _node_ids
-    ]    
-    \cup
-    [
-        (*@action
-            type struct AppendRequest {
-                term          : u64,
-                prev_log_index  : u64,
-                prev_log_term   : u64,
-                commit_index   : u64,
-                log_entries       : Sequence<type LogEntry>,
-            }
-            
-            type enum RaftMessage {
-                RMAppendRequest(type AppendRequest)
-            }
-            
-            automaton handle_message {
-                input action handle_append_request(
-                    message: type RaftMessage,
-                    from:type NodeId, 
-                    to:type NodeId, 
-
-                    name: unknown type TODO,
-                ) -> unknown type XXXX
-                ;
-                action internal handle_append_request(message: type AppendRequest);
-                action output handle_append_request(message: type AppendRequest);
-            }
-        @action*)     
-        msg_type          : {AppendRequest},
-        term          : 1.._max_term,
-        prev_log_index  : Nat,
-        prev_log_term   : Nat,
-        log_entries       : Seq(LogDomain(_max_term, _value_set)),
-        commit_index   : Nat,
-        source        : _node_ids,
-        dest          : _node_ids
-    ]     
-    \cup
-    [
-        msg_type           : {AppendResponse},
-        term           : 1.._max_term,
-        append_success : BOOLEAN,
-        match_index     : Nat,
-        source         : _node_ids,
-        dest           : _node_ids
-    ]
-    \cup
-    [   
-        msg_type        : {PreVoteRequest},
-        next_term       : 1.._max_term,
-        last_log_term   : Nat,
-        last_log_index  : Nat,
-        source          : _node_ids,
-        dest            : _node_ids
-    ]
-    \cup
-     [
-        msg_type            : {PreVoteResponse}, 
-        term                : 1.._max_term,
-        pv_granted    : BOOLEAN,
-        source              : _node_ids,
-        dest                : _node_ids
-     ]       
-    \cup 
-     [
-        msg_type            : {ApplyReq}, 
-        term                : 1.._max_term,
-        snapshot_term       : 1.._max_term,
-        snapshot_index      : 1..Len(_value_set),
-        snapshot_value      : {SUBSET(_value_set)},
-        source              : _node_ids,
-        dest                : _node_ids
-     ]   
 \* Return the minimum value from a set, or undefined if the set is empty.
 Min(s) == CHOOSE x \in s : \A y \in s : x <= y
 \* Return the maximum value from a set, or undefined if the set is empty.
@@ -363,7 +256,7 @@ OverlappedQuorum(
 
         
 LogHasValue(_log, _snapshot,   _value) ==
-    \/ \E v \in _snapshot.value : v.value = _value
+    \/ \E v \in _snapshot.entries : v.value = _value
     \/  \E i \in DOMAIN _log: (
             /\ i <= Len(_log)
             /\ i >= 1
@@ -492,7 +385,7 @@ AllValuesLEIndex(_log, _snapshot, index, _value_set) ==
             \/ \E i \in 1..Len(_log):
                 /\ _log[i].value = v 
                 /\ _log[i].index <= index
-            \/ \E i_v \in _snapshot.value:
+            \/ \E i_v \in _snapshot.entries:
                  i_v.value = v
     }
 
@@ -561,7 +454,7 @@ _InvLogIndexTermGrow(
             )
         /\_snapshot.term <= _log[i].term
      )
-   /\ \A v \in _snapshot.value:
+   /\ \A v \in _snapshot.entries:
         v.index <= _snapshot.index
 
         
@@ -611,11 +504,11 @@ _CurrentNodeIdSet(
     LET node_has_latest_conf == 
         CHOOSE i \in _node_ids: 
             ~ \E j \in _node_ids:
-                (\/ _config_committed[j].term > _config_committed[i].term
-                 \/ (/\ _config_committed[j].term = _config_committed[i].term
-                     /\ _config_committed[j].version > _config_committed[i].version)
+                (\/ _config_committed[j].conf_version.term > _config_committed[i].conf_version.term
+                 \/ (/\ _config_committed[j].conf_version.term = _config_committed[i].conf_version.term
+                     /\ _config_committed[j].conf_version.version > _config_committed[i].conf_version.version)
                 )
-        current_nodes == _config_committed[node_has_latest_conf].node  
+        current_nodes == _config_committed[node_has_latest_conf].nid_vote  
     IN current_nodes
                         
 InvPrefixCommitted(
@@ -776,7 +669,7 @@ AfterUpdateTermInner(
         ]
 
 
-BaseStateOK(
+StateOK(
     _state,
     _current_term,
     _log,
@@ -808,39 +701,100 @@ LogOK(
     /\ \A i \in _node_ids:
         /\ LogEntriesOK(_log, _snapshot, i, _max_term, _value_set)
 
+\* TLA+ {D240508N-_ConfVersion}
+_ConfVersion(
+    _term,
+    _version,
+    _commit_index
+) ==
+    [
+        version |-> _version,        
+        term |-> _term,
+        \* the commit index when the configuration was updated
+        index |-> _commit_index
+    ]
+
+_ConfNode(
+    _term,
+    _version,
+    _commit_index,
+    _nid_vote,
+    _nid_log
+) ==
+    [
+        conf_version |-> _ConfVersion(_term, _version, _commit_index),
+        nid_vote |-> _nid_vote,
+        nid_log |-> _nid_log
+    ]
 
 
-
-InitSaftyStateTrival(
-    _state,
-    _current_term,
-    _log,
-    _snapshot,
-    _voted_for,
+InitStateSetup(
     _node_ids,
-    _value_set,
-    _max_term,
-    _max_entries,
-    _max_snapshot_index
+    _node_ids2,
+    _state_all,
+    _value_set
     ) ==
-    /\ _state \in  [_node_ids -> {Follower} ]
-    /\ _current_term \in [_node_ids -> {1} ]
-    /\ _log \in [_node_ids -> {<<>>} ]
-    /\ _voted_for \in [_node_ids -> {INVALID_NODE_ID} ]
-    /\ _snapshot \in [_node_ids -> [term: {0}, index: {0}, value: {{}}] ]
-    /\ BaseStateOK(
-        _state,
-        _current_term,
-        _log,
-        _snapshot,
-        _voted_for,
-        _node_ids,
-        _value_set,
-        _max_term 
-        )
+    LET ids == _node_ids \cup _node_ids2
+        ids1 == _node_ids
+    IN    
+    [
+        role |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    Follower
+                ELSE
+                    _state_all.role[i]
+           ],
+        current_term |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    1
+                ELSE
+                    _state_all.current_term[i]
+            ],
+        log |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    <<>>
+                ELSE
+                    _state_all.log[i]
+            ],
+        voted_for |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    INVALID_NODE_ID
+                ELSE
+                    _state_all.voted_for[i]
+            ],
+        snapshot |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    [term |-> 0, index |-> 0, entries|-> {}] 
+                ELSE
+                    _state_all.snapshot[i]
+            
+            ],
+        commit_index |-> [
+             i \in ids |-> 
+                IF i \in ids1 THEN 
+                    0
+                ELSE
+                    _state_all.commit_index[i]
+             ],
+        conf_committed |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    _ConfNode(0, 0, 0, _node_ids, _node_ids)
+                ELSE
+                    _state_all.conf_committed[i]
+            ],
+        conf_new |-> [
+            i \in ids |-> 
+                IF i \in ids1 THEN 
+                    _ConfNode(0, 0, 0, _node_ids, _node_ids)
+                ELSE
+                    _state_all.conf_new[i]
+            ]
+    ]
         
-
-    
-
- 
 =============================================================================
